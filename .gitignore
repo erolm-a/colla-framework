@@ -240,3 +240,6 @@ spark-warehouse/
 
 # End of https://www.toptal.com/developers/gitignore/api/python,scala,spark
 
+# Ignore downloaded datasets
+data/
+notebooks/data/
