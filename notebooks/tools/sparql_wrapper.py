@@ -37,7 +37,7 @@ PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
 class WikidataQuery:
     """Wrapper to make SPARQL queries to Wikidata"""
     def __init__(self):
-        self.sparql = SPARQLWrapper("http://dbpedia.org/sparql")
+        self.sparql = SPARQLWrapper("https://query.wikidata.org/sparql")
         self.sparql.setReturnFormat(JSON)
         
     def gen_query(self, query):

@@ -5,3 +5,4 @@ pyspark==2.4.6
 python-dateutil==2.8.1
 pytz==2020.1
 six==1.15.0
+SPARQLWrapper==1.8.5
