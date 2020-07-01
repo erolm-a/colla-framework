@@ -8,6 +8,7 @@ import requests
 import pandas as pd
 
 from .sparql_wrapper import dbpedia_sparql, wikidata_sparql
+from .strings import strip_prefix
 
 DATA_FOLDER = "data"
 
@@ -20,7 +21,12 @@ def wrap_open(filename, *args, **kwargs):
     """wrapper to python's open() that prepends DATA_FOLDER"""
     path = get_filename_path(filename)
     os.makedirs(DATA_FOLDER, exist_ok=True)
-    return open(path, *args, **kwargs)
+
+    if "handler" in args:
+        handler = args["handler"]
+    else:
+        handler = open
+    return handler(path, *args, **kwargs)
 
 
 def download_to(url: str, filename: str):
