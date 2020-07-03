@@ -8,3 +8,5 @@ six==1.15.0
 SPARQLWrapper==1.8.5
 spacy==2.3.0
 sentence-transformers==0.2.6.2
+gsutil==4.51
+bs4==0.0.1
