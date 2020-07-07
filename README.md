@@ -12,3 +12,13 @@ If you are using pip (or the command above failed):
 
 ## Foreword
 `pyspark` does not seem to work with python 3.8 and higher at the moment. It is recommended to download python 3.7.* and then use `pip` to setup the project.
+
+## Webserver setup
+
+One needs to:
+
+- Build the Web Application UI. This requires to install node and npm with all the required dependencies for the webapp, run the build and generate a dist folder.
+
+- Run a webserver for that. TODO, but basically it should be Flask serving Vue.js dist as static files.
+
+- Launch the Flask application
