@@ -4,7 +4,15 @@
       <router-link to="/">Home</router-link> |
       <router-link to="/about">About</router-link>
     </div>
-    <router-view/>
+    <b-container fluid>
+      <b-row>
+        <b-col/>
+        <b-col>
+          <router-view/>
+        </b-col>
+        <b-col/>
+      </b-row>
+    </b-container>
   </div>
 </template>
 
