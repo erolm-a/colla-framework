@@ -7,7 +7,7 @@
     <b-container fluid>
       <b-row>
         <b-col/>
-        <b-col>
+        <b-col cols="10">
           <router-view/>
         </b-col>
         <b-col/>

@@ -1,9 +1,10 @@
 <template>
     <div>
-        <b-form @submit="onSubmit">
+        <b-form @submit="onSubmit" inline class="d-flex mb-2">
             <b-form-input
                 id="term-input"
                 v-model="keyword"
+                class="mb-2 mr-sm-2 mb-sm-0 flex-fill"
                 required
                 placeholder="Enter the term to search">
             </b-form-input>
@@ -15,12 +16,20 @@
                 Search
             </b-button>
         </b-form>
+
+        <b-alert show="errors.length > 0" variant="danger">
+            {{error}}
+        </b-alert>
+        <ul class="list-group">
+            <li class="list-group-item" v-for="result in results" :key="result">{{result}}</li>
+        </ul>
     </div>
 </template>
 
 <script lang="ts">
 
 import Vue from 'vue';
+import {ask, ExpressionDefinition, ExpressionDefinitionIntent, InconclusiveIntent } from '../api';
 
 export default Vue.extend({
     name: "SearchTerm",
@@ -28,17 +37,35 @@ export default Vue.extend({
     data() {
         return {
             keyword: "",
-            searching: false
+            results: [] as ExpressionDefinition[],
+            searching: false,
+            error: "",
+            showErrorAlert: false
         }
     },
 
     methods: {
-        onSubmit(event: Event): void {
+        async onSubmit(event: Event) {
             event.preventDefault();
-            console.log(this.keyword);
-
             this.searching = true;
-            setTimeout( () => {this.searching = false}, 5000);
+            try {
+                const response = await ask(this.keyword);
+                console.log(response);
+                if (response.intentType == "expressionDefinition")
+                {
+                    this.results = (response as ExpressionDefinitionIntent).senses;
+                }
+                else
+                {
+                    this.error = (response as InconclusiveIntent).response;
+                    this.showErrorAlert = true;
+                }
+            }
+            catch (error)
+            {
+                console.warn(error);
+            }
+            this.searching = false;
         }
     }
 });
