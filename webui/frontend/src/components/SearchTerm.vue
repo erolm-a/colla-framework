@@ -21,7 +21,10 @@
             {{error}}
         </b-alert>
         <ul class="list-group">
-            <li class="list-group-item" v-for="result in results" :key="result">{{result}}</li>
+            <li class="list-group-item" v-for="result in results" :key="result">
+                <!-- {{result}} -->
+                <i>({{result.pos}})</i> {{result.definition}}
+            </li>
         </ul>
     </div>
 </template>
@@ -57,6 +60,7 @@ export default Vue.extend({
                 }
                 else
                 {
+                    console.log("Not what I expected");
                     this.error = (response as InconclusiveIntent).response;
                     this.showErrorAlert = true;
                 }

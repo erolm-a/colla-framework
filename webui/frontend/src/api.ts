@@ -6,7 +6,7 @@ type POS = "noun" | "verb" | "adjective" | "pronoun" | "adverb"; // ...
 export interface ExpressionDefinition {
     pos: POS;
     definition: string;
-    example: string;
+    examples: string[];
     related: string[];
 }
 
