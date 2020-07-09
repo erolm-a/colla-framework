@@ -33,6 +33,15 @@ class DataSourceProvider(ABC):
            whatever this may mean for the underlying provider.
         """
         pass
+
+    @staticmethod
+    @abstractmethod
+    def dump_full_dataset(format, revision, *args, **kwargs):
+        """Dump a full dataset. The dump is meant to be used by the users
+           rather than the provider itself, for example because it does not
+           have indices or is not in a suitable format.
+        """
+        pass
     
     def fetch_dataset(self, entity, format, force_redownload=False, 
                       *args, **kwargs):
@@ -70,6 +79,10 @@ class WikidataProvider(DataSourceProvider):
         """, {"label", label})["entity.value"]
         return [self.fetch_dataset(entity, "json", *args, **kwargs) for entity in entities]
 
+    @staticmethod
+    def dump_full_dataset(format, revision, *args, **kwargs):
+        raise Exception("Not implemented yet")
+
     
 class DBPediaProvider(DataSourceProvider):
     def get_dump_url(self, entity, format, *args, **kwargs):
@@ -88,6 +101,10 @@ class DBPediaProvider(DataSourceProvider):
     def fetch_by_label(self, label, format, *args, **kwargs):
         # TODO: implement disambiguation management
         raise Exception("DBPedia LIKE search not yet implemented")
+
+    @staticmethod
+    def dump_full_dataset(self, format, revision, *args, **kwargs):
+        raise Exception("Not implemented yet")
 
 
 class WiktionaryProvider(DataSourceProvider):
@@ -136,3 +153,17 @@ class WiktionaryProvider(DataSourceProvider):
             lambda definition: BeautifulSoup(definition) \
                                 .get_text())
         return result_df
+
+    @staticmethod
+    def dump_full_dataset(format="bz2", revision="latest", variant="articles"):
+        """Download a Wiktionary dump.
+
+        params:
+        - `revision`: a date represented as a `str` in the format YYYYMMDD        
+        - `format`: a compression format; the user is expected to know in advance which format is needed.
+        - `variant`: by default dump the article dataset.
+        
+        """
+        basefile = f"wiktionary/enwiktionary-{revision}-pages-{variant}.xml.{format}"
+        url = f"https://dumps.wikimedia.org/enwiktionary/{revision}/{basefile}"
+        download_to(url, basefile)
