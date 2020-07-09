@@ -1,16 +1,26 @@
 <template>
   <div class="chat">
-    <ChatContainer/>
+    <!-- <ChatContainer/> -->
+    <BasicVueChat @newOwnMessage="sendMessage"/>
   </div>
 </template>
 
-<script>
-import ChatContainer from '@/components/ChatContainer';
+<script lang="ts">
+import Vue from 'vue';
 
-export default {
+import BasicVueChat from 'basic-vue-chat/src/components/basic-vue-chat/BasicVueChat';
+
+export default Vue.extend({
   name: 'Home',
   components: {
-    ChatContainer,
+    BasicVueChat,
   },
-};
+
+  methods: {
+      async sendMessage(message: string) {
+          console.log("Written this message: " + message);
+          return;
+      }
+  }
+});
 </script>

@@ -12,13 +12,18 @@ export interface ExpressionDefinition {
 
 export type ExpressionDefinitionIntent = {"senses": ExpressionDefinition[]};
 
+export interface NewDialogueIntent {
+    // Sessions are created with a cookie
+    welcomeText: string;
+}
+
 export interface InconclusiveIntent {
     response: string;
 }
 
-export type Intent = ExpressionDefinitionIntent | InconclusiveIntent;
+export type Intent = NewDialogueIntent | ExpressionDefinitionIntent | InconclusiveIntent;
 
-export type IntentResponse = {intentType: "expressionDefinition" | "inconclusional" } & Intent;
+export type IntentResponse = {intentType: "newDialogue" | "expressionDefinition" | "inconclusive" } & Intent;
 
 
 /**
@@ -29,14 +34,30 @@ export type IntentResponse = {intentType: "expressionDefinition" | "inconclusion
  */
 export async function ask(query: string): Promise<IntentResponse>
 {
-    const definitionApi = API_URL + "/query/" + query;
-    const response = await fetch(definitionApi);
+    const definitionURI = API_URL + "/query/" + query;
+    const response = await fetch(definitionURI);
 
     if (response.ok) {
         return await response.json() as IntentResponse;
     }
     else {
         console.warn(response.statusText);
-        return Promise.resolve({intentType: "inconclusional", response: "No"} as IntentResponse);
+        return Promise.resolve({intentType: "inconclusive", response: "No"} as IntentResponse);
+    }
+}
+
+export async function establishDialogue(): Promise<NewDialogueIntent>
+{
+    const sessionURI = API_URL + "/dialogue/session";
+    const response = await fetch(sessionURI);
+
+    if (response.ok) {
+        return await response.json() as NewDialogueIntent;
+    }
+    else
+    {
+        console.warn(response.statusText);
+        return Promise.reject();
+        // return Promise.resolve({intentType: "inconclusive", response: "No"} as IntentResponse);
     }
 }
