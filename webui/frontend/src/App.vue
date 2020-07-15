@@ -2,9 +2,18 @@
   <div id="app">
     <div id="nav">
       <router-link to="/">Home</router-link> |
+      <router-link to="/chat">Chat</router-link> |
       <router-link to="/about">About</router-link>
     </div>
-    <router-view/>
+    <b-container fluid>
+      <b-row>
+        <b-col/>
+        <b-col cols="10">
+          <router-view/>
+        </b-col>
+        <b-col/>
+      </b-row>
+    </b-container>
   </div>
 </template>
 
