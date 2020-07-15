@@ -146,7 +146,6 @@ class WiktionaryProvider(DataSourceProvider):
         with wrap_open(self.get_filename_path(label, "json")) as fp:
             result = json.load(fp)
 
-        print(result)
         result_df = self._response_to_df(result, language)
 
         result_df["strippedDefinition"] = result_df["definition"].apply(
