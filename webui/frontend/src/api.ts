@@ -1,25 +1,9 @@
-//const API_URL = "http://knowledge-glue-webui-jeffstudentsproject.ida.dcs.gla.ac.uk/api";
 const API_URL = "/api"
 
-type POS = "noun" | "verb" | "adjective" | "pronoun" | "adverb"; // ...
-
-export interface ExpressionDefinition {
-    pos: POS;
-    definition: string;
-    examples: string[];
-    related: string[];
+export interface IntentResponse {
+    intentType: string;
+    message: string;
 }
-
-export type ExpressionDefinitionIntent = {"senses": ExpressionDefinition[]};
-
-export interface InconclusiveIntent {
-    response: string;
-}
-
-export type Intent = ExpressionDefinitionIntent | InconclusiveIntent;
-
-export type IntentResponse = {intentType: "expressionDefinition" | "inconclusional" } & Intent;
-
 
 /**
  * Entry point for asking a question (without context)
@@ -27,16 +11,34 @@ export type IntentResponse = {intentType: "expressionDefinition" | "inconclusion
  * @param query A question to ask (in natural English)
  * @returns A promise of an IntentResponse.
  */
-export async function ask(query: string): Promise<IntentResponse>
+export async function send(utterance: string): Promise<IntentResponse>
 {
-    const definitionApi = API_URL + "/query/" + query;
-    const response = await fetch(definitionApi);
+    const definitionURI = API_URL + "/chat";
+    const payload = JSON.stringify({utterance});
+    const headers = {'Content-Type': 'application/json'}
+    const response = await fetch(definitionURI, {method: 'POST', headers: headers, body: payload});
 
     if (response.ok) {
         return await response.json() as IntentResponse;
     }
     else {
         console.warn(response.statusText);
-        return Promise.resolve({intentType: "inconclusional", response: "No"} as IntentResponse);
+        return Promise.resolve({intentType: "inconclusive", message: "No"} as IntentResponse);
+    }
+}
+
+export async function createSession(): Promise<IntentResponse>
+{
+    const sessionURI = API_URL + "/chat";
+    const response = await fetch(sessionURI);
+
+    if (response.ok) {
+        return await response.json() as IntentResponse;
+    }
+    else
+    {
+        console.warn(response.statusText);
+        return Promise.reject();
+        // return Promise.resolve({intentType: "inconclusive", response: "No"} as IntentResponse);
     }
 }
