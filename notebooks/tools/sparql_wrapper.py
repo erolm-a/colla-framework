@@ -28,6 +28,7 @@ class DBPediaQuery(SPARQLDataProviders):
     def __init__(self):
         self.sparql = SPARQLWrapper("http://dbpedia.org/sparql/")
     
+    @property
     def prefix(self):
         return """
             PREFIX owl: <http://www.w3.org/2002/07/owl#>
@@ -48,6 +49,7 @@ class WikidataQuery(SPARQLDataProviders):
     def __init__(self):
         self.sparql = SPARQLWrapper("https://query.wikidata.org/sparql")
         
+    @property
     def prefix(self):
         return ""
 
