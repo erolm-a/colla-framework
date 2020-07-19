@@ -8,9 +8,10 @@ from typing import List
 import numpy as np
 import pandas as pd
 from random import randint
-from text_to_num import alpha2digit
 
 from .providers import WiktionaryProvider
+from .grammar import grammar
+from .strings import convert_ordinal
 
 # model = SentenceTransformer('bert-base-nli-mean-tokens')
 
@@ -190,31 +191,3 @@ def find_exact_entities(label: str) -> DefinitionEntity:
                                               []))
     return DefinitionEntity(label, results_marshalling)
 
-
-def remove_suffix(word: str, suffix: str):
-    """Remove a suffix from a string. """
-    if word.endswith(suffix):
-        return word[:-len(suffix)]
-    return word
-
-def convert_ordinal(word: str):
-    """Convert a number to ordinal"""
-    basic_forms = {"first": "one",
-                   "second": "two",
-                   "third": "three",
-                   "fifth": "five",
-                   "twelfth": "twelve"}
-    
-    for k, v in basic_forms.items():
-        word = word.replace(k, v)
-    
-    word = word.replace("ieth", "y")
-    
-    for pattern in ["st", "nd", "rd", "th", "°"]:
-        word = remove_suffix(word, pattern)
-    
-    converted = alpha2digit(word, "en")
-    try:
-        return int(converted)
-    except:
-        return None
