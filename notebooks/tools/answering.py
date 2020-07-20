@@ -1,7 +1,6 @@
 """A bunch of QA functions"""
 
 from enum import Enum
-import regex as re
 from typing import List
 # from sentence_transformers import SentenceTransformer
 # from scipy.spatial import distance
@@ -10,8 +9,9 @@ import pandas as pd
 from random import randint
 
 from .providers import WiktionaryProvider
-from .grammar import grammar
-from .strings import convert_ordinal
+from .grammar import grammar, pick_best_semantics
+
+from .strings import convert_ordinal, remove_suffix
 
 # model = SentenceTransformer('bert-base-nli-mean-tokens')
 
@@ -156,27 +156,26 @@ class QuestionAnsweringContext:
         else:
             return failed_intent('unable to handle this question'), 401
 
-basic_definition_regex = re.compile(r'(?:define|definition of|say|how do you define) ?"?(?P<NP>"?.*)"?')
-filter_entity_singular_regex = re.compile(r'(give me the|tell me the|show me the|the) (?P<number>[^ ]+)')
 
 def match_intent_question(question: str) -> Intent:
     # TODO: use a fully-fledged CFG or a language model for this task
     question = question.strip().lower()
     question.replace("'", '"')
-    
-    # Matches a filter entity
-    matches = filter_entity_singular_regex.match(question)
-    if matches:
-        number = matches.group("number")
-        number_match = convert_ordinal(number)
-        if number_match:
-            return FilterIntent('single', number_match)
 
-    # Matches a basic definition
-    matches = basic_definition_regex.match(question)
-    if matches:
-        noun_phrase = matches.group("NP")
-        return DefinitionIntent(noun_phrase)
+    for eos in [".", "?", "!"]:
+        question = remove_suffix(question, eos)
+
+    parses = grammar.parse_input(question)
+    print(parses)
+    best_semantics = pick_best_semantics(parses)
+    print(best_semantics)
+
+    if best_semantics['intent'] == 'definition':
+        return DefinitionIntent(best_semantics['np'])
+    elif best_semantics['intent'] == 'filter':
+        if best_semantics['type'] == 'number':
+            return FilterIntent('single', best_semantics['value'])
+    
 
 
 def find_exact_entities(label: str) -> DefinitionEntity:

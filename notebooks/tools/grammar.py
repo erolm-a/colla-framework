@@ -10,6 +10,9 @@ Example:
 >>> for parse in parses: print(parse.semantics)
 {intent: definition, np: jungle}
 ```
+
+A parse may return multiple parses with slightly different semantics.
+Use `pick_best_semantics` to fetch the "most likely" semantics (dangerous).
 """
 
 import sys
@@ -19,6 +22,8 @@ import spacy
 from annotator import *
 from parsing import *
 from typing import List
+from functools import reduce
+
 from .strings import convert_ordinal
 
 
@@ -89,10 +94,23 @@ def make_cat(grammar: Grammar, rule: Rule):
     add_rule(grammar, Rule(rule.lhs, tuple(new_rhs), rule.sem))
 
 
-def parse_input(grammar: Grammar, input: str):
-    """Returns a list of all parses for input using grammar."""
+def parse_input(grammar: Grammar, input: str, must_consume_all=True):
+    """
+    Returns a list of all parses for input using the given grammar.
+    
+    Note: the rules are case-sensitive and perfectly token-sensitive.
+    
+    params:
+
+    - `grammar`: the Grammar instance to use
+    - `input`: the lowercase'd string to use.
+    - `must_consume_all`: if True the string must parse all the tokens.
+      Otherwise return all the parses that match with the $ROOT symbol.
+
+    """
     tokens_spacy = nlp(input) # New
     tokens = [token.text for token in tokens_spacy]
+    # the chart of the CYK parsing algorithm.
     chart = defaultdict(list)
     for j in range(1, len(tokens) + 1):
         for i in range(j - 1, -1, -1):
@@ -100,10 +118,17 @@ def parse_input(grammar: Grammar, input: str):
             apply_lexical_rules(grammar, chart, tokens, i, j)
             apply_binary_rules(grammar, chart, i, j)
             apply_unary_rules(grammar, chart, i, j)
-    parses = chart[(0, len(tokens))]
-    if hasattr(grammar, 'start_symbol') and grammar.start_symbol:
-        parses = [parse for parse in parses if parse.rule.lhs == grammar.start_symbol]
-    return parses
+
+    all_parses = []
+    for i in range(len(tokens), -1, -1):
+        parses = chart[(0, i)]
+    
+        if hasattr(grammar, 'start_symbol') and grammar.start_symbol:
+            all_parses.extend([parse for parse in parses if parse.rule.lhs == grammar.start_symbol])
+        if len(parses) > 0 or must_consume_all:
+            break
+
+    return all_parses
 
 
 class Grammar:
@@ -306,13 +331,36 @@ rules_filter = [
     
     Rule("$Only", "only"),
     Rule("$Only", "alone"),
-    
 ]
 
-ruleset = rules_definition + rules_end_of_sentence + rules_determiner + rules_filter
+rules_determiner = [
+    Rule('$Determiner', 'a'),
+    Rule('$Determiner', 'an'),
+    Rule('$Determiner', 'the'),
+]
+
+ruleset = rules_definition + rules_determiner + rules_filter
 annotators = [StopWordAnnotator(), ShowVerbAnnotator(),
                 TokenAnnotatorBuilder("$UnquotedToken", ["'", '"', "?"]),
                 OrdinalNumberAnnotator()]
 
 # Entry point of the grammar
 grammar = Grammar(rules=ruleset, annotators=annotators)
+
+def pick_best_semantics(parses):
+    """
+    Return the most likely matching parse.
+    
+    This is a simple stub. Does not do any ML here, despite it could
+    (and should), so use with care.
+    """
+    semantics = [parse.semantics for parse in parses]
+    
+    if all(parse["intent"] == "definition" for parse in semantics):
+        picked_parser = min(semantics, key=lambda parse: len(parse["np"]))
+    
+    else:
+        priority = {'sense_meaning': 1, 'number': 2}
+        picked_parser = max(semantics, key=lambda parse: len(parse.keys()) * 10 + priority[parse['type']])
+        
+    return picked_parser

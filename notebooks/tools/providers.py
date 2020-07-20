@@ -109,13 +109,12 @@ class DBPediaProvider(DataSourceProvider):
 
 class WiktionaryProvider(DataSourceProvider):
     def get_dump_url(self, entity, format, *args, **kwargs):
-        """"""
         if format != "json":
             raise Exception("Unsupported non-json formats")
         return f"https://en.wiktionary.org/api/rest_v1/page/definition/{entity}"
     
     def get_filename_path(self, entity, format):
-        if format != "json":
+        if format not in ["json", "parquet"]:
             raise Exception("Unsupported non-json formats")
         return join("wiktionary", f"{entity}.{format}")
 
@@ -134,7 +133,7 @@ class WiktionaryProvider(DataSourceProvider):
     def _response_to_df(response, language="en"):
         """explode definitions and convert the inner dicts into a pandas series, then join with PoS"""
         response_pd = pd.json_normalize(response[language]).explode("definitions")
-        exploded_columns = response_pd["definitions"].apply(pd.Series).drop("parsedExamples", axis=1)
+        exploded_columns = response_pd["definitions"].apply(pd.Series).drop("parsedExamples", axis=1, errors='ignore')
         
         WiktionaryProvider._replace_nan(exploded_columns, "examples")
 

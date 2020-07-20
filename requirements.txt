@@ -17,3 +17,4 @@ text2num==2.2.0
 wget==3.2
 matplotlib==3.2.2
 pyarrow==0.17.1
+mmh3==2.5.1
