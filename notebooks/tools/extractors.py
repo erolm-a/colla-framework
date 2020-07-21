@@ -243,7 +243,8 @@ english_verb_schema = StructType([
     StructField("lexeme", StringType()),
     StructField("pres_3sg", StringType(), nullable=True), # defective verbs
     StructField("pres_ptc", StringType()),
-    StructField("past", StringType())
+    StructField("past", StringType()),
+    StructField("past_ptc", StringType())
 ])
 
 english_adjective_schema = StructType([
