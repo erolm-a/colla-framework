@@ -168,6 +168,10 @@ def english_adjective_form_extractor(lexeme, head):
     
     return {**make_comparative(lexeme, params), **optional}
 
+def english_adverb_form_extractor(lexeme, head):
+    # The two take virtually the same parameters and behave in the same way
+    return english_adjective_form_extractor(lexeme, head)
+
 def english_noun_form_extractor(lexeme, head):
     plurals = []
     # sometimes the head parameters are given to "plxqual" rather than just as
@@ -254,6 +258,8 @@ english_adjective_schema = StructType([
     StructField("optional", StringType(), nullable=True)
 ])
 
+english_adverb_schema = english_adjective_schema
+
 english_noun_schema = StructType([
     StructField("plurals", ArrayType(StringType())),
     StructField("countable", StringType()), # yes/no/sometimes
@@ -267,6 +273,7 @@ def extract_form(cursor):
     # and entries are English-only (FIXME)
     udf_en_verbs = udf(lambda row: english_verb_form_extractor(*row), english_verb_schema)
     udf_en_adjs = udf(lambda row: english_adjective_form_extractor(*row), english_adjective_schema)
+    udf_en_advs = udf(lambda row: english_adverb_form_extractor(*row), english_adverb_schema)
     udf_en_noun = udf(lambda row: english_noun_form_extractor(*row), english_noun_schema)
     
     template_col = cursor["head"].template_name.alias("template")
@@ -282,12 +289,13 @@ def extract_form(cursor):
     
     verbs_df = get_pos_df("verb", udf_en_verbs)
     adjs_df = get_pos_df("adj", udf_en_adjs)
+    advs_df = get_pos_df("adv", udf_en_advs)
     noun_df = get_pos_df("noun", udf_en_noun)
     
     def custom_join(df1, df2):
         return df1.join(df2, ['word', 'template',], "leftouter")
     
-    return reduce(custom_join, [verbs_df, adjs_df, noun_df], cursor)
+    return reduce(custom_join, [verbs_df, adjs_df, advs_df, noun_df], cursor)
 
 def extract_df(dataframe, word = None):
     """Explode the heads of the entry, and potentially filter by word"""
