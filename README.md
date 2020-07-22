@@ -18,7 +18,6 @@ If you are using pip (or the command above failed):
 One needs to:
 
 - Build the Web Application UI. This requires to install node and npm with all the required dependencies for the webapp, run the build and generate a dist folder.
+Go to `webui/frontend` and run `npm install && npm run build`.
 
-- Run a webserver for that. TODO, but basically it should be Flask serving Vue.js dist as static files.
-
-- Launch the Flask application
+- Run the flask webserver.  Go to `webui/backend` and run `python app.py` (or use the flask command).

@@ -4,9 +4,10 @@ import json
 from os.path import join
 import pandas as pd
 
-from .sparql_wrapper import WikidataQuery
+from .sparql_wrapper import WikidataQuery, FusekiQuery
 
 from .dumps import is_file, download_to, wrap_open
+from .strings import strip_prefix
 
 class DataSourceProvider(ABC):
     def __init__(self):
@@ -109,13 +110,12 @@ class DBPediaProvider(DataSourceProvider):
 
 class WiktionaryProvider(DataSourceProvider):
     def get_dump_url(self, entity, format, *args, **kwargs):
-        """"""
         if format != "json":
             raise Exception("Unsupported non-json formats")
         return f"https://en.wiktionary.org/api/rest_v1/page/definition/{entity}"
     
     def get_filename_path(self, entity, format):
-        if format != "json":
+        if format not in ["json", "parquet"]:
             raise Exception("Unsupported non-json formats")
         return join("wiktionary", f"{entity}.{format}")
 
@@ -134,7 +134,7 @@ class WiktionaryProvider(DataSourceProvider):
     def _response_to_df(response, language="en"):
         """explode definitions and convert the inner dicts into a pandas series, then join with PoS"""
         response_pd = pd.json_normalize(response[language]).explode("definitions")
-        exploded_columns = response_pd["definitions"].apply(pd.Series).drop("parsedExamples", axis=1)
+        exploded_columns = response_pd["definitions"].apply(pd.Series).drop("parsedExamples", axis=1, errors='ignore')
         
         WiktionaryProvider._replace_nan(exploded_columns, "examples")
 
@@ -165,4 +165,66 @@ class WiktionaryProvider(DataSourceProvider):
         """
         basefile = f"wiktionary/enwiktionary-{revision}-pages-{variant}.xml.{format}"
         url = f"https://dumps.wikimedia.org/enwiktionary/{revision}/{basefile}"
+        download_to(url, basefile)
+
+class FusekiProvider(DataSourceProvider):
+    def __init__(self, flavour="sample_1000_simple"):
+        super().__init__()
+        self._flavour = flavour
+        self._fuseki_sparql = FusekiQuery(flavour)
+
+    @property
+    def fuseki_sparql(self):
+        return self._fuseki_sparql
+
+    @property
+    def flavour(self):
+        return self._flavour
+    
+    def get_dump_url(self, entity, format, *args, **kwargs):
+        """Extract a single entity. Currently not implemented
+    
+        Note that in DBPedia wikipedia links are entity identifiers and are
+        case-sensitive. The URL fetcher seems *not* to be solving the redirects
+        alone.
+        """
+        raise Exception("Not available")
+
+    def get_filename_path(self, entity, format):
+        raise Exception("Not available")
+
+    def fetch_by_label(self, label, format, *args, **kwargs):
+        return self.fuseki_sparql.run_query("""
+            SELECT ?entity ?pos ?sense ?senseDescription
+            WHERE
+            {
+                ?entity rdfs:label "?label"@en;
+                        rdf:sense ?sense;
+                        kglprop:pos ?pos.
+                ?sense kglprop:definition ?senseDescription.
+            }
+            """, {'label': label}).rename(index={"entity.value": "entity", 
+                                                 "sense.value": "sense",
+                                                 "senseDescription": })
+        # raise Exception("DBPedia LIKE search not yet implemented")
+
+    def fetch_examples(self, sense, *args, **kwargs):
+        """Fetch an example for a given sense.
+        
+        Sense must be an instantiation of a kgl
+        """
+        return self.fuseki_sparql.run_query("""
+            SELECT ?example
+            WHERE
+            {
+                ?sense kglprop:example ?example
+            }
+        """, {'sense': sense})
+
+    @staticmethod
+    def dump_full_dataset(self, format, flavour, *args, **kwargs):
+        if format != "ttl":
+            raise Exception("Unsupported format " + format)
+        basefile = f"fuseki/dump-{flavour}.ttl"
+        url = f"http://knowledge-glue-fuseki-jeffstudentsproject.ida.dcs.gla.ac.uk/{flavour}/data"
         download_to(url, basefile)
