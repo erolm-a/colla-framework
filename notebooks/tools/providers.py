@@ -195,23 +195,26 @@ class FusekiProvider(DataSourceProvider):
 
     def fetch_by_label(self, label, format, *args, **kwargs):
         return self.fuseki_sparql.run_query("""
-            SELECT ?entity ?pos ?sense ?senseDescription
+            SELECT ?entity ?pos ?sense ?example ?related ?senseDefinition
             WHERE
             {
-                ?entity rdfs:label "?label"@en;
-                        rdf:sense ?sense;
+                ?entity kglprop:label "?label"@en;
+                        kglprop:sense ?sense;
                         kglprop:pos ?pos.
-                ?sense kglprop:definition ?senseDescription.
+                ?sense kglprop:definition ?senseDefinition.
+                OPTIONAL {?sense kglprop:example ?example. }
+                OPTIONAL {?sense kglprop:related ?related. }
             }
-            """, {'label': label}).rename(index={"entity.value": "entity", 
-                                                 "sense.value": "sense",
-                                                 "senseDescription": })
-        # raise Exception("DBPedia LIKE search not yet implemented")
+            """, {'label': label}, True)
 
     def fetch_examples(self, sense, *args, **kwargs):
         """Fetch an example for a given sense.
         
         Sense must be an instantiation of a kgl
+        in the form of kgl:id-S0
+
+        Returns a dataframe with one column, "example",
+        containing examples (if any).
         """
         return self.fuseki_sparql.run_query("""
             SELECT ?example
@@ -219,7 +222,18 @@ class FusekiProvider(DataSourceProvider):
             {
                 ?sense kglprop:example ?example
             }
-        """, {'sense': sense})
+        """, {'sense': sense}, True)
+    
+    def fetch_forms(self, label=None, pos=None, ):
+        """
+        Search a form by some criteria.
+        
+        Available criteria:
+            - label: the lexeme (root form) must match this
+            - pos: the part of speech must match
+            - feature: a grammatical feature must match.
+        """
+        pass
 
     @staticmethod
     def dump_full_dataset(self, format, flavour, *args, **kwargs):

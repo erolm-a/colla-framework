@@ -361,6 +361,8 @@ def pick_best_semantics(parses):
     
     else:
         priority = {'sense_meaning': 1, 'number': 2}
-        picked_parser = max(semantics, key=lambda parse: len(parse.keys()) * 10 + priority[parse['type']])
+        for sem in semantics:
+            print(sem)
+        picked_parser = max(semantics, key=lambda parse: len(parse.keys()) * 10 + (priority[parse['type']] if 'type' in parse else 0))
         
     return picked_parser

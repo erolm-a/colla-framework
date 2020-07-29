@@ -2,18 +2,20 @@
 
 from enum import Enum
 from typing import List
-# from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer
 # from scipy.spatial import distance
 import numpy as np
 import pandas as pd
 from random import randint
 
-from .providers import WiktionaryProvider
+from .providers import FusekiProvider
 from .grammar import grammar, pick_best_semantics
 
-from .strings import convert_ordinal, remove_suffix
+from .strings import convert_ordinal, remove_suffix, strip_prefix
 
-# model = SentenceTransformer('bert-base-nli-mean-tokens')
+provider = FusekiProvider("sample_10000_common")
+
+model = SentenceTransformer('bert-base-nli-mean-tokens')
 
 class SerializedIntent:
     """This class serves as the output of an intent matcher that should then be serialized via Flask to the user."""
@@ -91,9 +93,11 @@ class FilterIntent(Intent):
         
         Possible values for `filter_type` are:
         - single
+        - sensical
 
         if filter_type is:
-            - "single", then filter_values is the number 
+            - "single", then filter_values is the number
+            - "sensical", then use BERT to determine which given sense is desired.
         """
         self._filter_type = filter_type
         self._filter_values = filter_values
@@ -104,8 +108,9 @@ class FilterIntent(Intent):
     
     @property
     def involving(self):
-        if self.filter_type == "single":
+        if self.filter_type in ["single", "sensical"]:
             return self._filter_values
+
 
 
 class QuestionAnsweringContext:
@@ -140,6 +145,16 @@ class QuestionAnsweringContext:
                 # No previous DefinitionEntity here
                 else:
                     return SerializedIntent(SerializedIntent.IntentType.ERROR, "I need a definition to work on!"), 400
+            
+            # Sensical
+            elif intent.filter_type == "sensical":
+                most_related = find_most_related_entity(self.entities, intent.involving)
+
+                message = "I think you mean the following:<br>"
+                for sense in self.entities.senses:
+                    if sense.id == most_related[0]:
+                        return SerializedIntent(SerializedIntent.IntentType.FILTER, message + sense.description)
+                
 
                 
         if isinstance(intent, DefinitionIntent):
@@ -173,20 +188,56 @@ def match_intent_question(question: str) -> Intent:
     if best_semantics['intent'] == 'definition':
         return DefinitionIntent(best_semantics['np'])
     elif best_semantics['intent'] == 'filter':
-        if best_semantics['type'] == 'number':
+        if best_semantics['type'] == "number":
             return FilterIntent('single', best_semantics['value'])
+        elif best_semantics['type'] == "sense_meaning":
+            return FilterIntent('sensical', best_semantics['value'])
     
 
 
 def find_exact_entities(label: str) -> DefinitionEntity:
     # Just wiktionary results
-    results_df = WiktionaryProvider().fetch_by_label(label, format="json")
+    results_df = provider.fetch_by_label(label, format="json")
     results_marshalling = []
     for row in results_df.iterrows():
         item = row[1]
-        results_marshalling.append(Sense("0", item["strippedDefinition"],
-                                              item["partOfSpeech"].lower(),
-                                              item["examples"],
+        results_marshalling.append(Sense(item["sense"],
+                                              item["senseDefinition"],
+                                              strip_prefix("kgl:", item["pos"].lower()),
+                                              [],
                                               []))
     return DefinitionEntity(label, results_marshalling)
 
+
+def find_most_related_entity(definition_entity: DefinitionEntity, descriptions):
+    """
+    Find a list of related entities that match the given descriptions.
+    This method uses a language model to disambiguate between different results.
+    
+    descriptions can be either a single string or an iterable of strings. In the latter case, the function
+    will return a list of matching entities with the given order.
+    """
+    descriptions_as_list = not isinstance(descriptions, str)
+    
+    if not descriptions_as_list:
+        descriptions = [descriptions]
+    
+    definitions = [sense.description for sense in definition_entity.senses] + descriptions
+    definitions = np.array(definitions)
+    
+    # Get S-BERT
+    embeddings = model.encode(definitions)
+    embeddings_np = np.array((embeddings))
+    embeddings_normalized = embeddings_np / np.linalg.norm(embeddings, axis=1).reshape(-1, 1)    
+    embedding_results, embedding_queries = embeddings_normalized[:-len(descriptions)] , embeddings_normalized[-len(descriptions):]
+    
+    # perform cosine similarity between all the queries and all the given descriptions
+    # I can't find a way to make this vectorized, but should not be a concern.
+    correlation_scores = [query.dot(embedding_results.T) for query in embedding_queries]
+    correlation_scores = np.stack(correlation_scores)
+    
+    # Match the queries with the entities based on maximum cosine similarity
+    preferred = np.argmax(correlation_scores, axis=1)
+    result =  [definition_entity.senses[idx].id for idx in preferred]
+    
+    return result 
