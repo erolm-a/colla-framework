@@ -224,7 +224,7 @@ class FusekiProvider(DataSourceProvider):
             }
         """, {'sense': sense}, True)
     
-    def fetch_forms(self, label=None, pos=None, ):
+    def fetch_forms(self, label=None, pos=None):
         """
         Search a form by some criteria.
         
@@ -234,6 +234,22 @@ class FusekiProvider(DataSourceProvider):
             - feature: a grammatical feature must match.
         """
         pass
+
+    def fetch_all_grammatical_categories(self, language="en"):
+        """
+        Return a list of all available grammatical categories for the given
+        language
+        """
+
+        query = """
+        SELECT ?grammaticalCategoryEntity ?grammaticalCategoryLabel
+        WHERE
+        {
+            ?grammaticalCategoryEntity a kgl:GrammaticalCategory;
+                                            rdfs:label ?grammaticalCategoryLabel.
+        }
+        """
+        self.fuseki_sparql.run_query(query)['grammaticalCategoryLabel.value']
 
     @staticmethod
     def dump_full_dataset(self, format, flavour, *args, **kwargs):
