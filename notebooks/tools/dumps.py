@@ -18,6 +18,7 @@ def wrap_open(filename, *args, **kwargs):
 
     if "handler" in args:
         handler = kwargs["handler"]
+        del kwargs["handler"]
     else:
         handler = open
     return handler(path, *args, **kwargs)
