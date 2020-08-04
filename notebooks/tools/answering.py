@@ -35,7 +35,9 @@ def failed_intent(error_message: str) -> SerializedIntent:
     return SerializedIntent(SerializedIntent.IntentType.ERROR, error_message)
 
 class Sense:
-    """A mere wrapper for senses"""
+    """
+    A wrapper and endpoint for sense-based search.
+    """
     def __init__(self, id: str, description: str, pos: str,
                  examples: List[str], related: List[str]):
         self.id = id
@@ -43,6 +45,28 @@ class Sense:
         self.pos = pos
         self.examples = examples
         self.related = related
+    
+    def show_examples(self):
+        message = "<br>Examples:<br>"
+        if len(sense.examples) > 0:
+            message += "<br>".join(sense.examples)
+        return message
+
+    def show_related(self):
+        message = "<br>Related:<br>"
+        if len(sense.related) > 0:
+            message += "<br>".join(sense.related)
+        return message
+
+    def show_usages(self):
+        # TODO
+        pass
+
+    def show_forms(self, required_form):
+        # TODO
+        pass
+
+
 
 class Intent:
     """Base class for all the intents"""
@@ -90,19 +114,23 @@ class DefinitionEntity:
 
 
 class FilterIntent(Intent):
-    def __init__(self, filter_type, filter_values):
+    def __init__(self, filter_type, filter_values, **kwargs):
         """Filter some results from a DefinitionEntity.
         
         Possible values for `filter_type` are:
         - single
         - sensical
+        - grammatical
 
         if filter_type is:
             - "single", then filter_values is the number
             - "sensical", then use BERT to determine which given sense is desired.
+            - "grammatical", then try to match with the given POS or forms.
         """
         self._filter_type = filter_type
         self._filter_values = filter_values
+
+        self._variant = kwargs.get('variant', None)
     
     @property
     def filter_type(self):
@@ -112,6 +140,50 @@ class FilterIntent(Intent):
     def involving(self):
         if self.filter_type in ["single", "sensical"]:
             return self._filter_values
+    
+    @property
+    def variant(self) -> str:
+        return self._variant
+
+
+    def handle_intent(self, context: QuestionAnsweringContext) -> SerializedIntent:
+        if self.filter_type == "single":
+            number = self.involving
+            if self.entities:
+                max_range = len(context.entities.senses)
+                if number not in range(0, max_range):
+                    return failed_intent(f"This sense does not exist! Try asking me to fetch the {randint(1, max_range)})°")
+                sense = context.entities.senses[number - 1]
+                message = f"More details on the item no. {number}: <br>"
+                message += f"<i>({sense.pos})</i> {sense.description}"
+
+                if self.variant is None:
+                    message += "<br>" + sense.show_examples()
+                    message += "<br>" + sense.show_related()
+                
+                elif self.variant == "example":
+                    message += "<br>" + sense.show_examples()
+                
+                elif self.variant == "related":
+                    message += "<br>" + sense.show_related()
+                
+                elif self.variant == "usages":
+                    message += "<br>" + sense.show_usages()
+               
+                return SerializedIntent(SerializedIntent.IntentType.FILTER, message)
+            
+            # No previous DefinitionEntity here
+            else:
+                return SerializedIntent(SerializedIntent.IntentType.ERROR, "I need a definition to work on!"), 400
+        
+        # Sensical
+        elif self.filter_type == "sensical":
+            most_related = find_most_related_entity(self.entities, intent.involving)
+
+            message = "I think you mean the following:<br>"
+            for sense in self.entities.senses:
+                if sense.id == most_related[0]:
+                    return SerializedIntent(SerializedIntent.IntentType.FILTER, message + sense.description)
 
 
 
@@ -175,7 +247,7 @@ class QuestionAnsweringContext:
 
 
 def match_intent_question(question: str) -> Intent:
-    # TODO: use a fully-fledged CFG or a language model for this task
+    # TODO: taking the lowercase version of the string is not always a good solution.
     question = question.strip().lower()
     question.replace("'", '"')
 
@@ -187,12 +259,16 @@ def match_intent_question(question: str) -> Intent:
     best_semantics = pick_best_semantics(parses)
     logger.debug(repr(best_semantics))
 
+    # Failed to match this intent
+    if not 'intent' in best_semantics:
+        return
+
     if best_semantics['intent'] == 'definition':
         return DefinitionIntent(best_semantics['np'])
     elif best_semantics['intent'] == 'filter':
-        if best_semantics['type'] == "number":
+        if best_semantics['filtertype'] == "number":
             return FilterIntent('single', best_semantics['value'])
-        elif best_semantics['type'] == "sense_meaning":
+        elif best_semantics['filtertype'] == "semantic":
             return FilterIntent('sensical', best_semantics['value'])
     
 

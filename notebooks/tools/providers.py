@@ -223,6 +223,18 @@ class FusekiProvider(DataSourceProvider):
                 ?sense kglprop:example ?example
             }
         """, {'sense': sense}, True)
+
+    def fetch_usages(self, sense_id: str, flatten=True):
+        """
+        Find usages for a given sense.
+
+        sense_id is the id of a sense in the form: kgl:id-Sx.
+
+        If flatten is true, return both subsenses and usages.
+        Otherwise, return only the subsenses.
+        """
+        pass
+
     
     def fetch_forms(self, label=None, pos=None):
         """
