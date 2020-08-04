@@ -168,7 +168,7 @@ class WiktionaryProvider(DataSourceProvider):
         download_to(url, basefile)
 
 class FusekiProvider(DataSourceProvider):
-    def __init__(self, flavour="sample_1000_simple"):
+    def __init__(self, flavour="sample_10000_common"):
         super().__init__()
         self._flavour = flavour
         self._fuseki_sparql = FusekiQuery(flavour)
@@ -249,7 +249,7 @@ class FusekiProvider(DataSourceProvider):
                                             rdfs:label ?grammaticalCategoryLabel.
         }
         """
-        self.fuseki_sparql.run_query(query)['grammaticalCategoryLabel.value']
+        return self.fuseki_sparql.run_query(query)['grammaticalCategoryLabel.value']
 
     @staticmethod
     def dump_full_dataset(self, format, flavour, *args, **kwargs):

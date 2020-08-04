@@ -26,7 +26,7 @@ from functools import reduce
 
 from .strings import convert_ordinal
 
-from .globals import nlp, fuseki_provider
+from .globals import nlp, fuseki_provider, logger
 
 
 
@@ -142,7 +142,7 @@ class Grammar:
         self.start_symbol = start_symbol
         for rule in rules:
             add_rule(self, rule)
-        print('Created grammar with %d rules.' % len(rules))
+        logger.info('Created grammar with %d rules.' % len(rules))
 
     def parse_input(self, input: str):
         """Returns a list of parses for the given input."""
@@ -274,6 +274,10 @@ def sems_0(sems):
 def sems_1(sems):
     """Return the second semantics"""
     return sems[1]
+
+def sems_2(sems):
+    """Return the third semantics"""
+    return sems[2]
 
 def merge_dicts(d1, d2):
     """
@@ -488,7 +492,9 @@ rules_words = [
 ]
 
 
-
+ruleset = rules_be + rules_definition + rules_determiner + \
+          rules_filter + rules_words + rules_wordsenses + \
+          rules_derived
 annotators = [StopWordAnnotator(), ShowVerbAnnotator(),
                 TokenAnnotatorBuilder("$UnquotedToken", ["'", '"', "?", ","]), # commas must split noun phrases
                 OrdinalNumberAnnotator(), POSAnnotator(),
@@ -516,3 +522,16 @@ def pick_best_semantics(parses):
         picked_parser = max(semantics, key=lambda parse: len(parse.keys()) * 10 + (priority[parse['filtertype']] if 'filtertype' in parse else 0))
         
     return picked_parser
+
+def print_parse(utterances):
+    """
+    Print all the parses for the given utterances.
+    This function is provided for inspection.
+
+    `utterances` is a list of strings to parse.
+    """
+    for utterance in utterances:
+        logger.debug("=" * 20)
+        logger.debug("For the utterance " + utterance + ":")
+        for parse in grammar.parse_input(utterance):
+            logger.debug(parse.semantics)

@@ -9,7 +9,9 @@ import pandas as pd
 from random import randint
 
 from .providers import FusekiProvider
-from .grammar import grammar, pick_best_semantics
+from .grammar import grammar, pick_best_semantics, print_parse
+
+from .globals import logger
 
 from .strings import convert_ordinal, remove_suffix, strip_prefix
 
@@ -66,7 +68,7 @@ class DefinitionEntity:
     
     def serialize(self) -> SerializedIntent:
         """Serialize the current state of the definitions into a human-readable output"""
-        print("Serializing an answer here...")
+        logger.debug("Serializing an answer here...")
         message = """Found the following meanings"""
         if len(self.senses) > 5:
             message += " (limited to 5 senses, unless you want more)"
@@ -120,7 +122,7 @@ class QuestionAnsweringContext:
         pass
 
     def handle_intent(self, intent: Intent) -> SerializedIntent:
-        print("Current state of the entities: ", self.entities)
+        logger.debug("Current state of the entities: " + repr(self.entities))
         if isinstance(intent, FilterIntent):
             if intent.filter_type == "single":
                 number = intent.involving
@@ -164,7 +166,7 @@ class QuestionAnsweringContext:
             return self.entities.serialize()
     
     def handle_question(self, question) -> SerializedIntent:
-        print(f"Obtained question: {question}")
+        logger.info(f"Obtained question: {question}")
         intent = match_intent_question(question)
         if intent is not None:
             return self.handle_intent(intent)
@@ -180,10 +182,10 @@ def match_intent_question(question: str) -> Intent:
     for eos in [".", "?", "!"]:
         question = remove_suffix(question, eos)
 
+    print_parse([question])
     parses = grammar.parse_input(question)
-    print(parses)
     best_semantics = pick_best_semantics(parses)
-    print(best_semantics)
+    logger.debug(repr(best_semantics))
 
     if best_semantics['intent'] == 'definition':
         return DefinitionIntent(best_semantics['np'])

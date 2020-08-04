@@ -1,15 +1,23 @@
+#!/bin/env python3
+
 from flask import Flask, send_file, redirect, session
 from flask_restful import Resource, Api, reqparse, fields, marshal_with
 from flask_restful_swagger import swagger
+import logging
+from logging.handlers import RotatingFileHandler
+import os
 import pickle
 
+
 from tools.answering import QuestionAnsweringContext, SerializedIntent, failed_intent
+from tools.globals import replace_logger
 
 app = Flask(__name__)
 api = swagger.docs(Api(app),
                    apiVersion='0.1',
                    description="A Basic Chatbot API")
 
+# TODO setup a CI and read this from an environment variable.
 app.secret_key = b'\x97\xba\xbb\xe4\xac5\x94\x10c\xda\x82\xb0\x9d\xe9\xa2|'
 
 @swagger.model
@@ -78,6 +86,12 @@ def serve_frontend():
 def docs():
     return redirect("/static/docs.html")
 
-if __name__ == '__main__':
-    app.run(debug=True)
+DEBUG_MODE = os.environ.get("FLASK_DEBUG", "False") == "True"
 
+if __name__ == '__main__':
+    handler = RotatingFileHandler("/tmp/debug.log", maxBytes=10000, backupCount=1)
+    handler.setLevel(logging.DEBUG if DEBUG_MODE else logging.INFO)
+
+    app.logger.addHandler(handler)
+    replace_logger(app.logger)
+    app.run(host="0.0.0.0", port="80", debug=DEBUG_MODE)
