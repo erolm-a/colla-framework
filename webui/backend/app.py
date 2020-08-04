@@ -86,7 +86,11 @@ def serve_frontend():
 def docs():
     return redirect("/static/docs.html")
 
-DEBUG_MODE = os.environ.get("FLASK_DEBUG", "False") == "True"
+print(os.environ.get("FLASK_DEBUG", "0"))
+
+DEBUG_MODE = os.environ.get("FLASK_DEBUG", "0") == "1"
+HOST = "localhost" if DEBUG_MODE else "0.0.0.0"
+PORT = 8080 if DEBUG_MODE else 80 # TODO make the pod use port 8080 only internally.
 
 if __name__ == '__main__':
     handler = RotatingFileHandler("/tmp/debug.log", maxBytes=10000, backupCount=1)
@@ -94,4 +98,4 @@ if __name__ == '__main__':
 
     app.logger.addHandler(handler)
     replace_logger(app.logger)
-    app.run(host="0.0.0.0", port="80", debug=DEBUG_MODE)
+    app.run(host=HOST, port=PORT, debug=DEBUG_MODE)

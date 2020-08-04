@@ -38,39 +38,56 @@ class Sense:
     """
     A wrapper and endpoint for sense-based search.
     """
-    def __init__(self, id: str, description: str, pos: str,
-                 examples: List[str], related: List[str]):
+    def __init__(self, id: str, parent_lexeme: str, parent_lexeme_str: str,
+                 description: str, pos: str, examples: List[str]):
         self.id = id
+        self.parent_lexeme = parent_lexeme
+        self.parent_lexeme_str = parent_lexeme_str
         self.description = description
         self.pos = pos
         self.examples = examples
-        self.related = related
     
     def show_examples(self):
         message = "<br>Examples:<br>"
-        if len(sense.examples) > 0:
-            message += "<br>".join(sense.examples)
-        return message
-
-    def show_related(self):
-        message = "<br>Related:<br>"
-        if len(sense.related) > 0:
-            message += "<br>".join(sense.related)
+        if len(self.examples) > 0:
+            message += "<br>".join(self.examples)
         return message
 
     def show_usages(self):
-        # TODO
-        pass
+        usages = provider.fetch_usages(self.id)
+        if len(usages) > 0:
+            message = "Usages: "
+            message += "".join(["<br>" + usage for usage in usages['description.value'].to_list()])
+        else:
+            message = "I am not aware of usages for the given sense"
+        return message
 
     def show_forms(self, required_form):
         # TODO
         pass
 
 
+class QuestionAnsweringContext:
+    """Context for a chatbot."""
+
+    def __init__(self):
+        self.entities = None
+        pass
+
+    def handle_question(self, question) -> SerializedIntent:
+        logger.info(f"Obtained question: {question}")
+        intent = match_intent_question(question)
+        if intent is not None:
+            return intent.handle_intent(self)
+        else:
+            return failed_intent('unable to handle this question'), 401
+
 
 class Intent:
     """Base class for all the intents"""
-    pass
+    def handle_intent(self, context: QuestionAnsweringContext):
+        pass
+
 
 class DefinitionIntent(Intent):
     """Intent for a lookup definition. It is used to map simple questions like
@@ -81,6 +98,11 @@ class DefinitionIntent(Intent):
     @property
     def noun_phrase(self):
         return self._noun_phrase
+
+
+    def handle_intent(self, context: QuestionAnsweringContext):
+        context.entities = find_exact_entities(self.noun_phrase)
+        return context.entities.serialize()
 
 
 class DefinitionEntity:
@@ -104,6 +126,7 @@ class DefinitionEntity:
 
         return SerializedIntent(SerializedIntent.IntentType.DEFINITION, message)
 
+
     @property
     def noun_phrase(self):
         return self._noun_phrase
@@ -114,137 +137,119 @@ class DefinitionEntity:
 
 
 class FilterIntent(Intent):
-    def __init__(self, filter_type, filter_values, **kwargs):
+    def __init__(self, intent_dict):
         """Filter some results from a DefinitionEntity.
-        
-        Possible values for `filter_type` are:
-        - single
-        - sensical
-        - grammatical
 
-        if filter_type is:
-            - "single", then filter_values is the number
-            - "sensical", then use BERT to determine which given sense is desired.
-            - "grammatical", then try to match with the given POS or forms.
+        Please refer to the Intent documentation.
         """
-        self._filter_type = filter_type
-        self._filter_values = filter_values
+        self._parse(intent_dict)
 
-        self._variant = kwargs.get('variant', None)
-    
+    def _parse(self, intent_dict):
+        self._filter_type = intent_dict.get("filtertype", None)
+        if self.filter_type in ["number", "semantic"]:
+            self._filter_values = intent_dict["value"]
+
+        self._variant = intent_dict.get("variant", None)
+        self.slots = intent_dict
+
     @property
     def filter_type(self):
         return self._filter_type
     
     @property
     def involving(self):
-        if self.filter_type in ["single", "sensical"]:
+        if self.filter_type in ["number", "semantic"]:
             return self._filter_values
     
     @property
     def variant(self) -> str:
         return self._variant
 
+    def handle_variant(self, senses: List[Sense]):
+        message = ""
+        for sense in senses:
+            if self.variant is None:
+                message += sense.show_examples()
+                message += sense.show_related()
 
-    def handle_intent(self, context: QuestionAnsweringContext) -> SerializedIntent:
-        if self.filter_type == "single":
+            elif self.variant == "example":
+                message += sense.show_examples()
+
+            elif self.variant == "usages":
+                message += sense.show_usages()
+        return message
+
+
+
+    def handle_intent(self, context) -> SerializedIntent:
+        message = ""
+
+        if not context.entities or not context.entities.senses:
+            return failed_intent("I don't have definitions to work on!")
+
+        matching_senses = context.entities.senses
+        if self.filter_type == "number":
             number = self.involving
-            if self.entities:
-                max_range = len(context.entities.senses)
-                if number not in range(0, max_range):
-                    return failed_intent(f"This sense does not exist! Try asking me to fetch the {randint(1, max_range)})°")
-                sense = context.entities.senses[number - 1]
-                message = f"More details on the item no. {number}: <br>"
-                message += f"<i>({sense.pos})</i> {sense.description}"
+            logger.info(number)
 
-                if self.variant is None:
-                    message += "<br>" + sense.show_examples()
-                    message += "<br>" + sense.show_related()
-                
-                elif self.variant == "example":
-                    message += "<br>" + sense.show_examples()
-                
-                elif self.variant == "related":
-                    message += "<br>" + sense.show_related()
-                
-                elif self.variant == "usages":
-                    message += "<br>" + sense.show_usages()
-               
-                return SerializedIntent(SerializedIntent.IntentType.FILTER, message)
-            
-            # No previous DefinitionEntity here
-            else:
-                return SerializedIntent(SerializedIntent.IntentType.ERROR, "I need a definition to work on!"), 400
-        
-        # Sensical
-        elif self.filter_type == "sensical":
-            most_related = find_most_related_entity(self.entities, intent.involving)
+            max_range = len(context.entities.senses)
+            logger.info(max_range)
+            if number not in range(0, max_range):
+                return failed_intent(f"This sense does not exist! Try asking me to tell you about the {randint(1, max_range)})°")
 
-            message = "I think you mean the following:<br>"
-            for sense in self.entities.senses:
-                if sense.id == most_related[0]:
-                    return SerializedIntent(SerializedIntent.IntentType.FILTER, message + sense.description)
+            matching_senses = [context.entities.senses[number - 1]]
 
+            message += f"More details on the item no. {number}: <br>"
+            if not self.variant:
+                message += f"<i>({matching_senses[0].pos})</i> {matching_senses[0].description}"
 
+        # Semantic
+        elif self.filter_type == "semantic":
+            related_match, confidence = find_most_related_entity(context.entities, self.involving)
+            related_match = related_match[0]
+            print(confidence)
+            confidence = confidence[0]
 
-class QuestionAnsweringContext:
-    """Context for a chatbot."""
-    def __init__(self):
-        self.entities = None
-        pass
+            if confidence < 0.5:
+                return failed_intent("I am not sure I got what you meant.")
 
-    def handle_intent(self, intent: Intent) -> SerializedIntent:
-        logger.debug("Current state of the entities: " + repr(self.entities))
-        if isinstance(intent, FilterIntent):
-            if intent.filter_type == "single":
-                number = intent.involving
-                if self.entities:
-                    max_range = len(self.entities.senses)
-                    if number not in range(0, max_range):
-                        return failed_intent(f"This sense does not exist! Try asking me to fetch the {randint(1, max_range)})°")
-                    sense = self.entities.senses[number - 1]
-                    message = f"More details on the item no. {number}: <br>"
-                    message += f"<i>({sense.pos})</i> {sense.description}"
+            message = "I think you meant the following:<br>"
+            matching_senses = [s for s in context.entities.senses if s.id == related_match]
+            if not self.variant:
+                message += matching_senses[0].description
 
-                    if len(sense.examples) > 0:
-                        message += "<br>Examples:<br>"
-                        message += "<br>".join(sense.examples)
+        # Grammatical
+        elif self.filter_type == "grammatical":
+            required_pos = self.slots.get("requiredPos", None)
+            if required_pos:
+                matching_senses = [sense for sense in context.entities.senses if sense.pos == required_pos]
+                if len(matching_senses) == 1:
+                    sense = matching_senses[0]
+                    if not self.variant:
+                        message += sense.description
+                        message += sense.show_examples()
 
-                    if len(sense.related) > 0:
-                        message += "<br>Examples:<br>"
-                        message += "<br>".join(sense.related)
-                    
-                    return SerializedIntent(SerializedIntent.IntentType.FILTER, message)
-                
-                # No previous DefinitionEntity here
-                else:
-                    return SerializedIntent(SerializedIntent.IntentType.ERROR, "I need a definition to work on!"), 400
-            
-            # Sensical
-            elif intent.filter_type == "sensical":
-                most_related = find_most_related_entity(self.entities, intent.involving)
+            grammatical_feature = self.slots.get("grammaticalFeature", None)
+            if grammatical_feature:
+                distinct_senses = {}
+                for sense in matching_senses:
+                    if not sense.parent_lexeme_str in distinct_senses:
+                        distinct_senses[sense.parent_lexeme_str] = sense
 
-                message = "I think you mean the following:<br>"
-                for sense in self.entities.senses:
-                    if sense.id == most_related[0]:
-                        return SerializedIntent(SerializedIntent.IntentType.FILTER, message + sense.description)
-                
+                for sense in distinct_senses.values():
+                    forms = provider.fetch_forms(sense, grammatical_feature)
+                    if len(forms) > 0:
+                        message += f"Found the following forms for {sense.parent_lexeme_str} ({sense.pos})"
+                        for row in forms["formLabel"].iterrows():
+                            form = row[1]
+                            message += f"<br>{form}"
+                    else:
+                        return failed_intent("I could not find matching forms")
 
-                
-        if isinstance(intent, DefinitionIntent):
-            noun_phrase = intent.noun_phrase
-            self.entities = find_exact_entities(noun_phrase)
+        if self.variant:
+            message += self.handle_variant(matching_senses)
 
-            return self.entities.serialize()
-    
-    def handle_question(self, question) -> SerializedIntent:
-        logger.info(f"Obtained question: {question}")
-        intent = match_intent_question(question)
-        if intent is not None:
-            return self.handle_intent(intent)
-        else:
-            return failed_intent('unable to handle this question'), 401
-
+        return SerializedIntent(SerializedIntent.IntentType.FILTER, message), 200
 
 def match_intent_question(question: str) -> Intent:
     # TODO: taking the lowercase version of the string is not always a good solution.
@@ -266,28 +271,28 @@ def match_intent_question(question: str) -> Intent:
     if best_semantics['intent'] == 'definition':
         return DefinitionIntent(best_semantics['np'])
     elif best_semantics['intent'] == 'filter':
-        if best_semantics['filtertype'] == "number":
-            return FilterIntent('single', best_semantics['value'])
-        elif best_semantics['filtertype'] == "semantic":
-            return FilterIntent('sensical', best_semantics['value'])
-    
+        return FilterIntent(best_semantics)
 
 
 def find_exact_entities(label: str) -> DefinitionEntity:
     # Just wiktionary results
     results_df = provider.fetch_by_label(label, format="json")
     results_marshalling = []
+    # TODO: the given label could (and *will*) be a conjugated noun.
+    # In theory the full wiktionary includes entries for extracted forms, but
+    # we shouldn't rely on that.
     for row in results_df.iterrows():
         item = row[1]
         results_marshalling.append(Sense(item["sense"],
+                                              item["entity"],
+                                              label,
                                               item["senseDefinition"],
                                               strip_prefix("kgl:", item["pos"].lower()),
-                                              [],
-                                              []))
+                                              item["example"]))
     return DefinitionEntity(label, results_marshalling)
 
 
-def find_most_related_entity(definition_entity: DefinitionEntity, descriptions):
+def find_most_related_entity(definition_entity: DefinitionEntity, descriptions) -> (List[str], np.array):
     """
     Find a list of related entities that match the given descriptions.
     This method uses a language model to disambiguate between different results.
@@ -310,12 +315,13 @@ def find_most_related_entity(definition_entity: DefinitionEntity, descriptions):
     embedding_results, embedding_queries = embeddings_normalized[:-len(descriptions)] , embeddings_normalized[-len(descriptions):]
     
     # perform cosine similarity between all the queries and all the given descriptions
-    # I can't find a way to make this vectorized, but should not be a concern.
+    # I can't find a way to make this vectorized, but it should not be a concern.
     correlation_scores = [query.dot(embedding_results.T) for query in embedding_queries]
     correlation_scores = np.stack(correlation_scores)
     
     # Match the queries with the entities based on maximum cosine similarity
     preferred = np.argmax(correlation_scores, axis=1)
-    result =  [definition_entity.senses[idx].id for idx in preferred]
+    result = [definition_entity.senses[idx].id for idx in preferred]
+    scores = np.max(correlation_scores, axis=1)
     
-    return result 
+    return result, scores

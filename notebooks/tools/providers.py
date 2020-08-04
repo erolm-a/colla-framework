@@ -7,7 +7,6 @@ import pandas as pd
 from .sparql_wrapper import WikidataQuery, FusekiQuery
 
 from .dumps import is_file, download_to, wrap_open
-from .strings import strip_prefix
 
 class DataSourceProvider(ABC):
     def __init__(self):
@@ -194,7 +193,7 @@ class FusekiProvider(DataSourceProvider):
         raise Exception("Not available")
 
     def fetch_by_label(self, label, format, *args, **kwargs):
-        return self.fuseki_sparql.run_query("""
+        result = self.fuseki_sparql.run_query("""
             SELECT ?entity ?pos ?sense ?example ?related ?senseDefinition
             WHERE
             {
@@ -203,9 +202,13 @@ class FusekiProvider(DataSourceProvider):
                         kglprop:pos ?pos.
                 ?sense kglprop:definition ?senseDefinition.
                 OPTIONAL {?sense kglprop:example ?example. }
-                OPTIONAL {?sense kglprop:related ?related. }
             }
             """, {'label': label}, True)
+        # Group examples by senses
+        distinct_senses = result.drop("example", axis=1).drop_duplicates()
+        examples_grouped = result.groupby("sense")['example'].apply(list).reset_index(name="examples")
+        return examples_grouped.join(distinct_senses.set_index("sense"), on="sense")
+
 
     def fetch_examples(self, sense, *args, **kwargs):
         """Fetch an example for a given sense.
@@ -233,19 +236,50 @@ class FusekiProvider(DataSourceProvider):
         If flatten is true, return both subsenses and usages.
         Otherwise, return only the subsenses.
         """
-        pass
+        if flatten:
+            query = """
+            SELECT ?description
+            WHERE
+            {
+              {
+                ?sense_id kglprop:subsense/kglprop:usage/kglprop:definition ?description.
+              }
+              UNION
+             {
+                ?sense_id kglprop:subsense/kglprop:definition ?description.
+              }
+            }
+            """
+        else:
+            query = """
+            SELECT ?description
+            WHERE
+            {
+                ?sense_id kglprop:subsense/kglprop:definition ?description.
+            }
+            """
+        return self.fuseki_sparql.run_query(query, placeholders={"sense_id": sense_id})
 
     
-    def fetch_forms(self, label=None, pos=None):
+    def fetch_forms(self, lexeme_id, feature):
         """
         Search a form by some criteria.
         
         Available criteria:
             - label: the lexeme (root form) must match this
-            - pos: the part of speech must match
             - feature: a grammatical feature must match.
         """
-        pass
+        query = """
+        SELECT ?form ?formLabel
+        WHERE
+        {
+            ?lexeme_id kglprop:form ?form.
+            ?form kglprop:label ?formLabel.
+            ?form kglprop:grammaticalFeature/kglprop:label ?feature.
+        }
+        """
+        return self.fuseki_sparql.run_query(query, placeholders={"lexeme_id": lexeme_id,
+                                                                 "feature": feature})
 
     def fetch_all_grammatical_categories(self, language="en"):
         """

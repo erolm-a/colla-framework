@@ -51,6 +51,7 @@ class SPARQLDataProviders():
         results =  self.sparql.query().convert()
 
         res_df = pd.json_normalize(results['results']['bindings'])
+        res_df.fillna("", axis=1, inplace=True)
         if keep_namespaces:
             value_columns = res_df.columns[res_df.columns.str.endswith("value")].to_list()
 
