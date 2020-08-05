@@ -79,3 +79,22 @@ export async function searchKGItem(item: string): Promise<EntityResponse>
         return Promise.reject();
     }
 }
+
+export function stripPrefix(value: string): string
+{
+    const kglNamespace = "http://grill-lab.org/kg/entity/";
+    const kglpropNamespace = "http://grill-lab.org/kg/property/"
+
+
+    if(value.startsWith(kglNamespace))
+    {
+      return "kgl:" + value.slice(kglNamespace.length);
+    }
+    else if(value.startsWith(kglpropNamespace))
+    {
+      return "kglprop:" + value.slice(kglpropNamespace.length);
+    }
+
+    return value;
+
+}

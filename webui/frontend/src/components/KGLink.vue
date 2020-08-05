@@ -1,40 +1,33 @@
 <template>
-    <router-link :to="getUrl">{{stripPrefix}}</router-link>
+    <router-link :to="url">{{strip(to)}}</router-link>
 </template>
 
 <script lang="ts">
-import Vue from 'vue';
+import { Component, Prop, Vue } from 'vue-property-decorator'
+import {stripPrefix} from '../api';
+import KGCollapse from '@/components/KGCollapse.vue';
+import { Route } from 'vue-router';
 
-export default Vue.extend({
-    name: 'KGLink',
+@Component
+export default class KGLink extends Vue
+{
+  @Prop({required: true}) readonly to?: string;
 
-    props: ["to"],
+  get url()
+  {
+    return "/kg/" + this.stripped;
+  }
 
-    computed: {
-        getUrl: function() {
-            const stripped =  this.stripPrefix;
-            return "/kg/" + stripped;
-        },
+  get stripped()
+  {
+    if(this.to)
+      return stripPrefix(this.to);
+    return "";
+  }
 
-        stripPrefix: function() {
-          const kglNamespace = "http://grill-lab.org/kg/entity/";
-          const kglpropNamespace = "http://grill-lab.org/kg/property/"
-
-          const to = this.to;
-
-          if(to.startsWith(kglNamespace))
-          {
-            return "kgl:" + to.slice(kglNamespace.length);
-          }
-          else if(to.startsWith(kglpropNamespace))
-          {
-            return "kglprop:" + to.slice(kglpropNamespace.length);
-          }
-
-          return to;
-      }
-    },
-
-    
-});
+  private strip(value: string)
+  {
+    return stripPrefix(value);
+  }
+};
 </script>
