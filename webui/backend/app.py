@@ -3,14 +3,16 @@
 from flask import Flask, send_file, redirect, session
 from flask_restful import Resource, Api, reqparse, fields, marshal_with
 from flask_restful_swagger import swagger
+
 import logging
 from logging.handlers import RotatingFileHandler
 import os
 import pickle
 
 
+
 from tools.answering import QuestionAnsweringContext, SerializedIntent, failed_intent
-from tools.globals import replace_logger
+from tools.globals import replace_logger, fuseki_provider
 
 app = Flask(__name__)
 api = swagger.docs(Api(app),
@@ -75,8 +77,45 @@ class DialogueAnsweringResource(Resource):
 
         return response
 
-        
+class KGVisualizer(Resource):
+    @swagger.operation(
+        notes="Dump an item from the KG",
+        parameters = [
+            {
+                "name": "entity",
+                "description": "The entity or property in the knowledge graph to look for",
+                "required": True,
+                "allowMultiple": False,
+                "dataType": "string",
+                "paramType": "path",
+            }
+        ]
+    )
+    def get(self, entity):
+        return fuseki_provider.get_dump_url(entity, "json-ld")
+
+class KGSearcher(Resource):
+    @swagger.operation(
+        notes="Select an item in the kg that matches a given label or description",
+        parameters=[
+            {
+                "name": "label",
+                "description": "label or part of the description of the entity to look for",
+                "required": True,
+                "allowMultiple": False,
+                "dataType": "string",
+                "paramType": "path",
+            }
+        ]
+    )
+    def get(self, label):
+        # TODO: users may want the actual matched label. Perfectly exact results are misleading
+        return fuseki_provider.fetch_by_label(label)['entity'].drop_duplicates().to_list()
+
 api.add_resource(DialogueAnsweringResource, "/api/chat")
+api.add_resource(KGVisualizer, "/api/kg/<string:entity>")
+api.add_resource(KGSearcher, "/api/search/<string:label>")
+
 
 @app.route("/")
 def serve_frontend():

@@ -181,18 +181,22 @@ class FusekiProvider(DataSourceProvider):
         return self._flavour
     
     def get_dump_url(self, entity, format, *args, **kwargs):
-        """Extract a single entity. Currently not implemented
-    
-        Note that in DBPedia wikipedia links are entity identifiers and are
-        case-sensitive. The URL fetcher seems *not* to be solving the redirects
-        alone.
+        """Extract a single entity.
         """
-        raise Exception("Not available")
+        # TODO this call has a different format from the others!
+        query = """
+        CONSTRUCT
+        WHERE
+        {
+            ?entity ?p ?o.
+        }"""
+        rdflib_graph = self.fuseki_sparql.run_query(query, placeholders={"entity": entity})
+        return json.loads(rdflib_graph.serialize(format=format))
 
     def get_filename_path(self, entity, format):
         raise Exception("Not available")
 
-    def fetch_by_label(self, label, format, *args, **kwargs):
+    def fetch_by_label(self, label, format=None, *args, **kwargs):
         result = self.fuseki_sparql.run_query("""
             SELECT ?entity ?pos ?sense ?example ?related ?senseDefinition
             WHERE
@@ -208,7 +212,6 @@ class FusekiProvider(DataSourceProvider):
         distinct_senses = result.drop("example", axis=1).drop_duplicates()
         examples_grouped = result.groupby("sense")['example'].apply(list).reset_index(name="examples")
         return examples_grouped.join(distinct_senses.set_index("sense"), on="sense")
-
 
     def fetch_examples(self, sense, *args, **kwargs):
         """Fetch an example for a given sense.

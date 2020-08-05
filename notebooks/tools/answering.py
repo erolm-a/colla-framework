@@ -48,9 +48,9 @@ class Sense:
         self.examples = examples
     
     def show_examples(self):
-        message = "<br>Examples:<br>"
+        message = ""
         if len(self.examples) > 0:
-            message += "<br>".join(self.examples)
+            message = "<br>".join(self.examples)
         return message
 
     def show_usages(self):
@@ -179,8 +179,6 @@ class FilterIntent(Intent):
                 message += sense.show_usages()
         return message
 
-
-
     def handle_intent(self, context) -> SerializedIntent:
         message = ""
 
@@ -288,7 +286,7 @@ def find_exact_entities(label: str) -> DefinitionEntity:
                                               label,
                                               item["senseDefinition"],
                                               strip_prefix("kgl:", item["pos"].lower()),
-                                              item["example"]))
+                                              item["examples"]))
     return DefinitionEntity(label, results_marshalling)
 
 
