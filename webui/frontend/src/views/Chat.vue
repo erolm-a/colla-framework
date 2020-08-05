@@ -8,6 +8,7 @@
 <script lang="ts">
 import Vue from 'vue';
 
+// @ts-ignore
 import BasicVueChat from 'basic-vue-chat/src/components/basic-vue-chat/BasicVueChat';
 import { createSession, send, IntentResponse } from '../api';
 
