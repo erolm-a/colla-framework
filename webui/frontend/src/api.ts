@@ -1,9 +1,13 @@
-const API_URL = "/api"
+const API_URL = window.location.hostname.startsWith("127.0.0.1") ? "http://127.0.0.1:8080/api" : "/api"
+console.log(window.location.hostname)
 
 export interface IntentResponse {
     intentType: string;
     message: string;
 }
+
+export type EntityResponse = string;
+export type Entity = any;
 
 /**
  * Entry point for asking a question (without context)
@@ -40,5 +44,38 @@ export async function createSession(): Promise<IntentResponse>
         console.warn(response.statusText);
         return Promise.reject();
         // return Promise.resolve({intentType: "inconclusive", response: "No"} as IntentResponse);
+    }
+}
+
+export async function searchByLabel(label: string): Promise<Entity[]>
+{
+    const fetchURI = API_URL + `/search/${label}`;
+    const response = await fetch(fetchURI);
+
+    if (response.ok) {
+        return await response.json() as EntityResponse[];
+    }
+    else
+    {
+        console.warn(response.statusText);
+        return Promise.reject();
+    }
+}
+
+export async function searchKGItem(item: string): Promise<EntityResponse>
+{
+    console.assert(item.startsWith("kgl:") ||  item.startsWith("kglprop"));
+
+
+    const fetchURI = API_URL + `/kg/${item}`;
+    const response = await fetch(fetchURI);
+
+    if (response.ok) {
+        return await response.json() as EntityResponse
+    }
+    else
+    {
+        console.warn(response.statusText);
+        return Promise.reject();
     }
 }

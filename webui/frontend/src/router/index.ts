@@ -2,6 +2,7 @@ import Vue from 'vue';
 import VueRouter, { RouteConfig } from 'vue-router';
 import Home from '../views/Home.vue';
 import Chat from '../views/Chat.vue';
+import KGVisualizer from '../views/KGVisualizer.vue';
 
 Vue.use(VueRouter);
 
@@ -24,6 +25,11 @@ const routes: Array<RouteConfig> = [
     // which is lazy-loaded when the route is visited.
     component: () => import(/* webpackChunkName: "about" */ '../views/About.vue'),
   },
+  {
+    path: '/kg/:entity',
+    name: "Entity",
+    component: KGVisualizer
+  }
 ];
 
 const router = new VueRouter({
