@@ -110,15 +110,22 @@ class KGSearcher(Resource):
     )
     def get(self, label):
         # TODO: users may want the actual matched label. Perfectly exact results are misleading
-        return fuseki_provider.fetch_by_label(label)['entity'].drop_duplicates().to_list()
+        results = fuseki_provider.fetch_by_label(label)
+        if results is None:
+            return []
+        return results['entity'].drop_duplicates().to_list()
 
 api.add_resource(DialogueAnsweringResource, "/api/chat")
 api.add_resource(KGVisualizer, "/api/kg/<string:entity>")
 api.add_resource(KGSearcher, "/api/search/<string:label>")
 
 
-@app.route("/")
-def serve_frontend():
+# Allow for nested routing
+@app.route("/", defaults={'path': '', 'path2': '', 'path3': ''})
+@app.route('/<path:path>', defaults={'path2': '', 'path3': ''})
+@app.route('/<path:path>/<path:path2>', defaults={'path3': ''})
+@app.route('/<path:path>/<path:path2>/<path:path3>')
+def serve_frontend(path, path2, path3):
     return send_file('build/index.html')
 
 @app.route("/docs")

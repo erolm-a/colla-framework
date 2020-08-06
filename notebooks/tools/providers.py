@@ -198,7 +198,7 @@ class FusekiProvider(DataSourceProvider):
 
     def fetch_by_label(self, label, format=None, *args, **kwargs):
         result = self.fuseki_sparql.run_query("""
-            SELECT ?entity ?pos ?sense ?example ?related ?senseDefinition
+            SELECT ?entity ?pos ?sense ?example ?senseDefinition
             WHERE
             {
                 ?entity kglprop:label "?label"@en;
@@ -206,8 +206,17 @@ class FusekiProvider(DataSourceProvider):
                         kglprop:pos ?pos.
                 ?sense kglprop:definition ?senseDefinition.
                 OPTIONAL {?sense kglprop:example ?example. }
+                OPTIONAL {?sense kglprop:subsense/kglprop:example ?example. }
+                OPTIONAL {?sense kglprop:subsense/kglprop:usage/kglprop:example ?example. }
             }
             """, {'label': label}, True)
+        
+        if len(result) == 0:
+            return None
+
+        if not "example" in result.columns:
+            result['example'] = ""
+
         # Group examples by senses
         distinct_senses = result.drop("example", axis=1).drop_duplicates()
         examples_grouped = result.groupby("sense")['example'].apply(list).reset_index(name="examples")

@@ -102,6 +102,8 @@ class DefinitionIntent(Intent):
 
     def handle_intent(self, context: QuestionAnsweringContext):
         context.entities = find_exact_entities(self.noun_phrase)
+        if context.entities is None:
+            return failed_intent("I could not find what you were looking for")
         return context.entities.serialize()
 
 
@@ -275,6 +277,8 @@ def match_intent_question(question: str) -> Intent:
 def find_exact_entities(label: str) -> DefinitionEntity:
     # Just wiktionary results
     results_df = provider.fetch_by_label(label, format="json")
+    if results_df is None:
+        return None
     results_marshalling = []
     # TODO: the given label could (and *will*) be a conjugated noun.
     # In theory the full wiktionary includes entries for extracted forms, but
