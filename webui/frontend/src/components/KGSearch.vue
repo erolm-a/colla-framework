@@ -50,7 +50,6 @@ export default Vue.extend({
                 this.error = ""
                 this.showErrorAlert = false;
                 const response = await searchByLabel(this.keyword);
-                console.log(response);
                 this.results = response;
                 if(this.results.length == 0)
                 {

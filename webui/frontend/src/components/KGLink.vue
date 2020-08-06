@@ -1,5 +1,5 @@
 <template>
-    <router-link :to="url">{{strip(to)}}</router-link>
+    <router-link :to="url">{{stripped}}</router-link>
 </template>
 
 <script lang="ts">
@@ -13,6 +13,8 @@ export default class KGLink extends Vue
 
   get url()
   {
+    if(this.to == this.stripped)
+      return this.to;
     return "/kg/" + this.stripped;
   }
 
@@ -21,11 +23,6 @@ export default class KGLink extends Vue
     if(this.to)
       return stripPrefix(this.to);
     return "";
-  }
-
-  private strip(value: string)
-  {
-    return stripPrefix(value);
   }
 };
 </script>

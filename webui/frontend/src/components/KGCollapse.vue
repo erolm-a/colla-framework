@@ -66,7 +66,7 @@ export default Vue.extend({
       },
 
       withValue() {
-          return this.property.values && this.property.values[0]['@id']
+          return this.property.values && this.property.values[0]['@value']
       }
   },
 
@@ -74,8 +74,8 @@ export default Vue.extend({
 
   methods: {
       strip: stripPrefix
-  }
-
+  },
+  
 });
 
 </script>

@@ -44,14 +44,14 @@ export default class KGVisualiser extends Vue
 
     private async updatePredicates (route: Route) {
         const entityId = route.params.entity;
-        console.log("predicates: " + this.predicates);
         try {
-            console.log(this.$route.params.entity);
-            const entity = (await searchKGItem(entityId))[0];
-            const predicateObjects = Object.entries(entity);
 
             while(this.predicates.length)
                 this.predicates.pop();
+
+            const entity = (await searchKGItem(entityId))[0];
+            const predicateObjects = Object.entries(entity);
+
             
             for(const [predicate, nested] of predicateObjects)
             {
