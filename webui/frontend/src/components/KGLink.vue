@@ -5,8 +5,6 @@
 <script lang="ts">
 import { Component, Prop, Vue } from 'vue-property-decorator'
 import {stripPrefix} from '../api';
-import KGCollapse from '@/components/KGCollapse.vue';
-import { Route } from 'vue-router';
 
 @Component
 export default class KGLink extends Vue
