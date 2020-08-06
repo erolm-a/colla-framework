@@ -18,3 +18,7 @@ wget==3.2
 matplotlib==3.2.2
 pyarrow==0.17.1
 mmh3==2.5.1
+wheel==0.34.2
+scikit-learn==0.23.1
+sklearn==0.0
+rdflib-jsonld==0.5.0
