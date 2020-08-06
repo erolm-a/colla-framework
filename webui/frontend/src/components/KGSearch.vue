@@ -17,7 +17,7 @@
             </b-button>
         </b-form>
 
-        <b-alert show="errors.length > 0" variant="danger">
+        <b-alert :show=showErrorAlert variant="danger">
             {{error}}
         </b-alert>
         <ul class="list-group">
@@ -30,7 +30,7 @@
 
 <script lang="ts">
 import Vue from 'vue';
-import {searchByLabel, searchKGItem, EntityResponse} from '../api';
+import {searchByLabel, EntityResponse} from '../api';
 export default Vue.extend({
     name: "KGSearch",
     data() {
@@ -47,9 +47,15 @@ export default Vue.extend({
             event.preventDefault();
             this.searching = true;
             try {
+                this.error = ""
+                this.showErrorAlert = false;
                 const response = await searchByLabel(this.keyword);
                 console.log(response);
                 this.results = response;
+                if(this.results.length == 0)
+                {
+                    throw Error("The search did not return any result");
+                }
             }
             catch (error)
             {
