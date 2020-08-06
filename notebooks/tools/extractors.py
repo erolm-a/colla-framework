@@ -164,7 +164,7 @@ def english_adjective_form_extractor(lexeme, head):
                 return {"lexeme": lexeme, "optional": "not comparable"}
             if is_comparable_only:
                 return {"lexeme": lexeme, "optional": "comparable-only"}
-        optional = {'optional': '"generally not comparable"'}
+        optional = {'optional': "generally not comparable"}
     
     return {**make_comparative(lexeme, params), **optional}
 
@@ -179,8 +179,9 @@ def english_noun_form_extractor(lexeme, head):
     for i in range(1, 15):
         pl = head[str(i)]
         if pl:
-            qual = head["pl" + ("" if i == 1 else str(i)) + "qual"]
-            if qual:
+            qual_name = "pl" + ("" if i == 1 else str(i)) + "qual"
+            if qual_name in head and head[qual_name]:
+                qual = head[qual_name]
                 plurals.append({'term': 'pl', 'qualifiers': [qual]})
             else:
                 plurals.append(pl)
@@ -214,8 +215,6 @@ def english_noun_form_extractor(lexeme, head):
     
     if len(plurals) == 0:
         return optional
-    
-    print(plurals)
     
     # replace -y with -ies if -y is preceded by consonant
     def check_ies(pl, stem):
@@ -268,34 +267,27 @@ english_noun_schema = StructType([
     StructField("optional", StringType(), nullable=True)
 ])
 
+def udf_wrapper(func, schema, template):
+    def func_wrapper(lexeme, head):
+        if head['template_name'] == template:
+            return func(lexeme, head)
+    return udf(lambda row: func_wrapper(*row), schema)
+    
+
 def extract_form(cursor):
     # assuming the cursor only works on lexemes (FIXME)
-    # and entries are English-only (FIXME)
-    udf_en_verbs = udf(lambda row: english_verb_form_extractor(*row), english_verb_schema)
-    udf_en_adjs = udf(lambda row: english_adjective_form_extractor(*row), english_adjective_schema)
-    udf_en_advs = udf(lambda row: english_adverb_form_extractor(*row), english_adverb_schema)
-    udf_en_noun = udf(lambda row: english_noun_form_extractor(*row), english_noun_schema)
+    udf_verbs = udf_wrapper(english_verb_form_extractor, english_verb_schema, "en-verb")
+    udf_adjs = udf_wrapper(english_adjective_form_extractor, english_adjective_schema, "en-adj")
+    udf_advs = udf_wrapper(english_adverb_form_extractor, english_adverb_schema, "en-adv")
+    udf_nouns = udf_wrapper(english_verb_form_extractor, english_noun_schema, "en-noun")
+       
+    for name, udf in [('verb_forms', udf_verbs), ('adj_forms', udf_adjs),
+                         ('adv_forms', udf_advs), ('noun_forms', udf_nouns)]:
+        
+        extracted_struct = struct('word', 'head')
+        cursor = cursor.withColumn(name, udf(extracted_struct))
     
-    template_col = cursor["head"].template_name.alias("template")
-    word_col = cursor.word
-    extracted_struct = struct([cursor.word, 'head'])
-    
-    cursor = cursor.select([*cursor.columns, template_col ])
-    
-    def get_pos_df(pos, udf):
-        return cursor.where(f'head.template_name = "en-{pos}"') \
-                        .select([word_col.alias('word'), template_col,
-                                   udf(extracted_struct).alias(f'{pos}_forms')])
-    
-    verbs_df = get_pos_df("verb", udf_en_verbs)
-    adjs_df = get_pos_df("adj", udf_en_adjs)
-    advs_df = get_pos_df("adv", udf_en_advs)
-    noun_df = get_pos_df("noun", udf_en_noun)
-    
-    def custom_join(df1, df2):
-        return df1.join(df2, ['word', 'template',], "leftouter")
-    
-    return reduce(custom_join, [verbs_df, adjs_df, advs_df, noun_df], cursor)
+    return cursor
 
 def extract_df(dataframe, word = None):
     """Explode the heads of the entry, and potentially filter by word"""

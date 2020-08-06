@@ -26,9 +26,9 @@ from functools import reduce
 
 from .strings import convert_ordinal
 
+from .globals import nlp, fuseki_provider, logger
 
-# TODO spacy is also being used somewhere else... make a flyweight?
-nlp = spacy.load("en_core_web_md")
+
 
 def add_rule(grammar: Grammar, rule: Rule):
     """
@@ -142,7 +142,7 @@ class Grammar:
         self.start_symbol = start_symbol
         for rule in rules:
             add_rule(self, rule)
-        print('Created grammar with %d rules.' % len(rules))
+        logger.info('Created grammar with %d rules.' % len(rules))
 
     def parse_input(self, input: str):
         """Returns a list of parses for the given input."""
@@ -222,6 +222,49 @@ class OrdinalNumberAnnotator(Annotator):
             return [('$OrdinalNumber', value)]
         return []
 
+class POSAnnotator(Annotator):
+    """
+    Annotate parts of speech.
+    Used in the filter intent matcher to determine if the user mentioned a part
+    of speech.
+    """
+    def annotate(self, tokens):
+        candidate = " ".join(tokens)
+        value = None
+        if candidate == "noun":
+            value = "noun"
+        if candidate == "verb":
+            value = "verb"
+        if candidate == "adjective":
+            value = "adj"
+        if candidate == "adverb":
+            value = "adv"
+        if candidate == "pronoun":
+            value = "pron"
+        if value:
+            return [('$POS', value)]
+        return []
+
+
+class GrammaticalFeatureAnnotator:
+    """
+    Annotate a grammatical feature.
+    Used to determine if the user mentioned a grammatical feature ("singular",
+    "third person indicative" etc.);
+    """
+    def __init__(self, categories_set):
+        self.categories_set = categories_set
+
+    def annotate(self, tokens):
+        # TODO: this is a stub, please improve
+        candidate = " ".join(tokens)
+        if candidate in self.categories_set:
+            return [("$GrammaticalFeature", candidate)]
+        return []
+
+categories_set = set(fuseki_provider.fetch_all_grammatical_categories().to_numpy())
+
+
 # Semantics tool functions
 
 def sems_0(sems):
@@ -231,6 +274,10 @@ def sems_0(sems):
 def sems_1(sems):
     """Return the second semantics"""
     return sems[1]
+
+def sems_2(sems):
+    """Return the third semantics"""
+    return sems[2]
 
 def merge_dicts(d1, d2):
     """
@@ -270,18 +317,53 @@ rules_definition = [
     Rule('$DefinitionQueryElements', '$DefinitionQuestion $NounPhrase',
          merge_dicts_singleparam),
     
-    Rule('$DefinitionQuestion', '$ShowVerb ?me'),
+    # Special case: "what does X mean?"
+    Rule('$DefinitionQueryElements', 'what does $NounPhrase mean', sems_2),
+    
+    Rule('$DefinitionQuestion', '$ShowVerb ?me ?$Determiner'),
+    Rule('$DefinitionQuestion', '$ShowVerb ?me $WhoDefinition'),
+    Rule('$DefinitionQuestion', '$ShowVerb ?me $WhatDefinition'),
     Rule('$DefinitionQuestion', '$WhatDefinition'),
-    Rule('$WhatDefinition', 'what is ?$Determiner ?$DefinitionFor'),
+    Rule('$DefinitionQuestion', '$WhoDefinition', {'isPerson': True}),
+    Rule('$WhoDefinition', 'who $Be'),
+    Rule('$WhatDefinition', 'what $Be ?$Determiner ?$DefinitionFor'),
     Rule('$WhatDefinition', 'how do you $ShowVerb'),
-    Rule('$DefinitionFor', 'meaning $StopWord'),
-    Rule('$DefinitionFor', 'sense $StopWord'),
-    Rule('$DefinitionFor', 'definition $StopWord'),
+    Rule('$DefinitionFor', '$WordSense $StopWord'),
     Rule('$NounPhrase', "$Tokens", to_np),
     Rule('$NounPhrase', "' $Tokens '", to_np),
     Rule('$NounPhrase', '" $Tokens "', to_np),
     Rule('$Tokens', '$UnquotedToken ?$Tokens', concatenate)
 ]
+
+rules_determiner = [
+    Rule('$Determiner', 'a'),
+    Rule('$Determiner', 'an'),
+    Rule('$Determiner', 'the'),
+    Rule('$Determiner', 'about the'),
+    Rule('$Determiner', 'its'),
+]
+
+rules_be = [
+    Rule("$Be", "is"),
+    Rule("$Be", "are"),
+    Rule("$Be", "'s"),
+    Rule("$Be", "were"),
+    Rule("$Be", "was"),
+]
+
+rules_wordsenses = [
+    Rule("$WordSense", "one"),
+    Rule("$WordSense", "sense"),
+    Rule("$WordSense", "meaning"),
+    Rule("$WordSense", "definition"),
+    Rule("$WordSense", "definitions"),
+    Rule("$WordSense", "possibility"),
+    Rule("$WordSense", "possibilities"),
+    Rule("$WordSense", "case"),
+    Rule("$WordSense", "field"),
+]
+
+
 
 def merge_dict_type_builder(type_):
     def f(sems):
@@ -289,60 +371,134 @@ def merge_dict_type_builder(type_):
     return f
 
 rules_filter = [
-    Rule('$ROOT', '$FilterQuery', sems_0),
-    Rule('$FilterQuery', '?$ShowVerb $FilterQueryElements',
-         lambda sems: merge_dicts({'intent': 'filter'}, sems[1])),
+    Rule('$ROOT', '$FilterQuery', lambda sems: merge_dicts({'intent': 'filter'}, sems[0])),
+    # Tell me about...
+    Rule('$FilterQuery', '?$ShowVerb ?$StopWord $FilterQueryElements', sems_2),
+    # What about...
+    Rule('$FilterQuery', 'what about $FilterQueryElements', sems_2),
+    # What are the...
+    Rule('$FilterQuery', 'what $Be ?$Determiner $FilterQueryElements', lambda sems: sems[3]),
+    # "which examples are available?"
+    Rule('$FilterQuery', 'what $FilterQueryElements $be $More', sems_1),
+    Rule('$FilterQuery', 'which $FilterQueryElements $be $More', sems_1),
+    Rule('$FilterQuery', '$FilterQueryElements', sems_0),
     
-    Rule('$FilterQuery', 'what about $FilterQueryElements',
-         lambda sems: merge_dicts({'intent': 'filter'}, sems[2])),
     
     # ordinal case
     Rule('$FilterQueryElements', "?$More the $OrdinalNumber ?$WordSense ?$Only",
-         lambda sems: {'type': 'number', 'value': strip_none(sems)[0]}),
-    
+         lambda sems: {'filtertype': 'number', 'value': strip_none(sems)[0]}),
+         
     # "more about the mathematical case"
     Rule('$FilterQueryElements', "?$More the $UnquotedToken $WordSense ?$Only",
-         lambda sems: {'type': 'sense_meaning', "value": strip_none(sems)[0]}),
+         lambda sems: {'filtertype': 'semantic', "value": strip_none(sems)[0]}),
     
     # some examples
     Rule('$FilterQueryElements', '?$More $Extra', sems_1),
     # some examples for the second case
     Rule('$FilterQueryElements', '?$More $Extra $StopWord ?$Determiner $OrdinalNumber $WordSense ?$Only',
+         #lambda sems: merge_dicts({'type': 'number', 'value': sems[4]}, sems[1])),
          merge_dict_type_builder('number')),
-    
+         
     # some examples for the botanical case
     Rule('$FilterQueryElements', '?$More $Extra $StopWord ?$Determiner $UnquotedToken $WordSense ?$Only',
-         merge_dict_type_builder('sense_meaning')),
+         # lambda sems: merge_dicts({'type': 'sense_meaning', 'value': sems[4]}, sems[1])),
+         merge_dict_type_builder('semantic')),
+
+    # some examples as a verb
+    Rule('$FilterQueryElements', '?$More $Extra ?$Filler $StopWord ?$Determiner $POS',
+         # lambda sems: merge_dicts({'type': 'sense_meaning', 'value': sems[4]}, sems[1])),
+         lambda sems: merge_dicts({'filtertype': 'grammatical', 'requiredPos': sems[5]}, sems[1])),
     
+    # Show me the plural form
+    Rule("$FilterQueryElements", "$Determiner $GrammaticalFeature ?form",
+         lambda sems: {'filtertype': 'grammatical', 'grammaticalFeature': sems[1]}),
     
+    # Ask for examples, categories or usages
     Rule('$Extra', 'examples', {'variant': "example"}),
-    Rule('$Extra', 'related words', {'variant': 'related'}),
+    Rule('$Extra', 'categories', {'variant': "categories"}),
+    Rule('$Extra', 'usages', {'variant': "usages"}),
+    Rule('$Extra', 'senses', {'variant': "senses"}),
+    Rule('$Extra', 'parts of speech', {'variant': "pos"}),
+    Rule('$Extra', 'conjugate', {'variant': "forms"}),
+    Rule('$Extra', 'conjugation', {'variant': "forms"}),
+    Rule('$Extra', 'forms', {'variant': "forms"}),
+    
+    # Category question where category precedes the rest
+    Rule('$FilterQuery', "$FilterCategoryQuery",
+         lambda sems: merge_dicts({'filtertype': 'semantic'}, sems[0])),
+    # in the field of computer science, what does x mean?
+    Rule('$FilterCategoryQuery', "$Category $WhatFilter", sems_0),
+    Rule('$FilterCategoryQuery', "$WhatFilter $Category", sems_1),
+    Rule('$FilterCategoryQuery', "$Category $?More $Extra", merge_dicts_singleparam),
+    
     
     Rule('$More', "more"),
-    Rule('$More', "more about"), # TODO: add optionals for terminals as well
+    Rule('$More', "more about"),
     Rule('$More', "some"),
+    Rule('$More', "some some"),
+    Rule('$More', 'possible'),
+    Rule('$More', 'available'),
     
-    Rule("$WordSense", "one"),
-    Rule("$WordSense", "sense"),
-    Rule("$WordSense", "meaning"),
-    Rule("$WordSense", "definition"),
-    Rule("$WordSense", "possibility"),
-    Rule("$WordSense", "case"),
+
     
     Rule("$Only", "only"),
     Rule("$Only", "alone"),
+    
+    Rule("$Filler", "$StopWord $NounPhrase"),
+    
+    Rule("$Category", "in $Determiner $WordSense $StopWord $NounPhrase ?,", lambda sems: {'category': sems[4]['np']}),
+    Rule("$WhatFilter", "what does $NounPhrase mean"),
+    Rule("$WhatFilter", "what $Be $Determiner $WordSense"),
 ]
 
-rules_determiner = [
-    Rule('$Determiner', 'a'),
-    Rule('$Determiner', 'an'),
-    Rule('$Determiner', 'the'),
+
+rules_derived = [
+    Rule('$ROOT', '$RelatedQuery', lambda sems: merge_dicts({'intent': 'related'}, sems[0])),
+    
+    Rule('$RelatedQuery', '?$ShowVerb $RelatedQueryElements', sems_1),
+    # What are related senses?
+    Rule('$RelatedQuery', 'what $Be $RelatedQueryElements', sems_2),
+    Rule('$RelatedQuery', 'which $Be $RelatedQueryElements', sems_2),
+    # What senses are related
+    Rule('$RelatedQuery', 'what $Word $Be $RelatedQueryElements', lambda sems: sems[3]),
+    Rule('$RelatedQuery', '$RelatedQueryElements', sems_0),
+    Rule('$RelatedQueryElements', '?$Determiner $Derived ?$Word', sems_1),
+    Rule('$RelatedQueryElements', '?$More $Derived ?$Word', sems_1),
+    Rule('$RelatedQueryElements', '?$Determiner $Quality $Derived', lambda sems: merge_dicts(sems[1], sems[2])),
+    Rule('$RelatedQueryElements', '?$More $Quality $Derived', lambda sems: merge_dicts(sems[1], sems[2])),
+    
+    
+     # some examples of the derived words
+    Rule('$RelatedQueryElements', '?$More $Extra $StopWord ?$Determiner $Derived ?$Word',
+         lambda sems: merge_dicts(sems[1], sems[4])),
+         
+    Rule('$Derived', 'derived', {'filtertype': 'derived'}),
+    Rule('$Derived', 'synonym', {'filtertype': 'synonym'}),
+    Rule('$Derived', 'synonyms', {'filtertype': 'synonym'}),
+    Rule('$Derived', 'antonym', {'filtertype': 'antonym'}),
+    Rule('$Derived', 'opposites', {'filtertype': 'antonym'}),
+    Rule('$Derived', 'antonyms', {'filtertype': 'antonym'}),
+    
+    Rule('$Quality', '$QualityToken', lambda sems: {'category': sems[0]}),
 ]
 
-ruleset = rules_definition + rules_determiner + rules_filter
+rules_words = [
+    Rule('$Word', 'word'),
+    Rule('$Word', 'words'),
+    Rule('$Word', 'lexeme'),
+    Rule('$Word', 'lexemes'),
+    Rule('$Word', 'lemma'),
+    Rule('$Word', 'lemmas'),
+]
+
+
+ruleset = rules_be + rules_definition + rules_determiner + \
+          rules_filter + rules_words + rules_wordsenses + \
+          rules_derived
 annotators = [StopWordAnnotator(), ShowVerbAnnotator(),
-                TokenAnnotatorBuilder("$UnquotedToken", ["'", '"', "?"]),
-                OrdinalNumberAnnotator()]
+                TokenAnnotatorBuilder("$UnquotedToken", ["'", '"', "?", ","]), # commas must split noun phrases
+                OrdinalNumberAnnotator(), POSAnnotator(),
+                GrammaticalFeatureAnnotator(categories_set)]
 
 # Entry point of the grammar
 grammar = Grammar(rules=ruleset, annotators=annotators)
@@ -354,13 +510,28 @@ def pick_best_semantics(parses):
     This is a simple stub. Does not do any ML here, despite it could
     (and should), so use with care.
     """
+    if parses == []:
+        return {}
     semantics = [parse.semantics for parse in parses]
     
     if all(parse["intent"] == "definition" for parse in semantics):
         picked_parser = min(semantics, key=lambda parse: len(parse["np"]))
     
     else:
-        priority = {'sense_meaning': 1, 'number': 2}
-        picked_parser = max(semantics, key=lambda parse: len(parse.keys()) * 10 + priority[parse['type']])
+        priority = {'grammatical': 1, 'semantic': 2, 'number': 3}
+        picked_parser = max(semantics, key=lambda parse: len(parse.keys()) * 10 + (priority[parse['filtertype']] if 'filtertype' in parse else 0))
         
     return picked_parser
+
+def print_parse(utterances):
+    """
+    Print all the parses for the given utterances.
+    This function is provided for inspection.
+
+    `utterances` is a list of strings to parse.
+    """
+    for utterance in utterances:
+        logger.debug("=" * 20)
+        logger.debug("For the utterance " + utterance + ":")
+        for parse in grammar.parse_input(utterance):
+            logger.debug(parse.semantics)

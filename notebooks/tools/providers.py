@@ -7,7 +7,6 @@ import pandas as pd
 from .sparql_wrapper import WikidataQuery, FusekiQuery
 
 from .dumps import is_file, download_to, wrap_open
-from .strings import strip_prefix
 
 class DataSourceProvider(ABC):
     def __init__(self):
@@ -168,7 +167,7 @@ class WiktionaryProvider(DataSourceProvider):
         download_to(url, basefile)
 
 class FusekiProvider(DataSourceProvider):
-    def __init__(self, flavour="sample_1000_simple"):
+    def __init__(self, flavour="sample_10000_common"):
         super().__init__()
         self._flavour = flavour
         self._fuseki_sparql = FusekiQuery(flavour)
@@ -182,36 +181,55 @@ class FusekiProvider(DataSourceProvider):
         return self._flavour
     
     def get_dump_url(self, entity, format, *args, **kwargs):
-        """Extract a single entity. Currently not implemented
-    
-        Note that in DBPedia wikipedia links are entity identifiers and are
-        case-sensitive. The URL fetcher seems *not* to be solving the redirects
-        alone.
+        """Extract a single entity.
         """
-        raise Exception("Not available")
+        # TODO this call has a different format from the others!
+        query = """
+        CONSTRUCT
+        WHERE
+        {
+            ?entity ?p ?o.
+        }"""
+        rdflib_graph = self.fuseki_sparql.run_query(query, placeholders={"entity": entity})
+        return json.loads(rdflib_graph.serialize(format=format))
 
     def get_filename_path(self, entity, format):
         raise Exception("Not available")
 
-    def fetch_by_label(self, label, format, *args, **kwargs):
-        return self.fuseki_sparql.run_query("""
-            SELECT ?entity ?pos ?sense ?senseDescription
+    def fetch_by_label(self, label, format=None, *args, **kwargs):
+        result = self.fuseki_sparql.run_query("""
+            SELECT ?entity ?pos ?sense ?example ?senseDefinition
             WHERE
             {
-                ?entity rdfs:label "?label"@en;
-                        rdf:sense ?sense;
+                ?entity kglprop:label "?label"@en;
+                        kglprop:sense ?sense;
                         kglprop:pos ?pos.
-                ?sense kglprop:definition ?senseDescription.
+                ?sense kglprop:definition ?senseDefinition.
+                OPTIONAL {?sense kglprop:example ?example. }
+                OPTIONAL {?sense kglprop:subsense/kglprop:example ?example. }
+                OPTIONAL {?sense kglprop:subsense/kglprop:usage/kglprop:example ?example. }
             }
-            """, {'label': label}).rename(index={"entity.value": "entity", 
-                                                 "sense.value": "sense",
-                                                 "senseDescription": })
-        # raise Exception("DBPedia LIKE search not yet implemented")
+            """, {'label': label}, True)
+        
+        if len(result) == 0:
+            return None
+
+        if not "example" in result.columns:
+            result['example'] = ""
+
+        # Group examples by senses
+        distinct_senses = result.drop("example", axis=1).drop_duplicates()
+        examples_grouped = result.groupby("sense")['example'].apply(list).reset_index(name="examples")
+        return examples_grouped.join(distinct_senses.set_index("sense"), on="sense")
 
     def fetch_examples(self, sense, *args, **kwargs):
         """Fetch an example for a given sense.
         
         Sense must be an instantiation of a kgl
+        in the form of kgl:id-S0
+
+        Returns a dataframe with one column, "example",
+        containing examples (if any).
         """
         return self.fuseki_sparql.run_query("""
             SELECT ?example
@@ -219,7 +237,77 @@ class FusekiProvider(DataSourceProvider):
             {
                 ?sense kglprop:example ?example
             }
-        """, {'sense': sense})
+        """, {'sense': sense}, True)
+
+    def fetch_usages(self, sense_id: str, flatten=True):
+        """
+        Find usages for a given sense.
+
+        sense_id is the id of a sense in the form: kgl:id-Sx.
+
+        If flatten is true, return both subsenses and usages.
+        Otherwise, return only the subsenses.
+        """
+        if flatten:
+            query = """
+            SELECT ?description
+            WHERE
+            {
+              {
+                ?sense_id kglprop:subsense/kglprop:usage/kglprop:definition ?description.
+              }
+              UNION
+             {
+                ?sense_id kglprop:subsense/kglprop:definition ?description.
+              }
+            }
+            """
+        else:
+            query = """
+            SELECT ?description
+            WHERE
+            {
+                ?sense_id kglprop:subsense/kglprop:definition ?description.
+            }
+            """
+        return self.fuseki_sparql.run_query(query, placeholders={"sense_id": sense_id})
+
+    
+    def fetch_forms(self, lexeme_id, feature):
+        """
+        Search a form by some criteria.
+        
+        Available criteria:
+            - label: the lexeme (root form) must match this
+            - feature: a grammatical feature must match.
+        """
+        query = """
+        SELECT ?form ?formLabel
+        WHERE
+        {
+            ?lexeme_id kglprop:form ?form.
+            ?form kglprop:label ?formLabel.
+            ?form kglprop:grammaticalFeature/kglprop:label ?feature.
+        }
+        """
+        return self.fuseki_sparql.run_query(query, placeholders={"lexeme_id": lexeme_id,
+                                                                 "feature": feature})
+
+    def fetch_all_grammatical_categories(self, language="en"):
+        """
+        Return a list of all available grammatical categories for the given
+        language
+        """
+
+        query = """
+        SELECT ?grammaticalCategoryEntity ?grammaticalCategoryLabel
+        WHERE
+        {
+            ?grammaticalCategoryEntity a kgl:GrammaticalCategory;
+                                            rdfs:label ?grammaticalCategoryLabel.
+        }
+        """
+        return self.fuseki_sparql.run_query(query)['grammaticalCategoryLabel.value']
 
     @staticmethod
     def dump_full_dataset(self, format, flavour, *args, **kwargs):
