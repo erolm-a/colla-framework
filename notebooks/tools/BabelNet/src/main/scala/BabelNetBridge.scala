@@ -19,7 +19,7 @@ object BabelNetBridge {
   private def linguistic(source: BabelSenseSource): Boolean = {
     source.isFromBabelNet || source.isFromWiktionary ||
       source.isFromWordAtlas || source.isFromWordNet || source.isFromOmegaWiki ||
-      source.isAutomaticTranslationFromBabelNet || source.isFromAnyWordnet
+      source.isFromAnyWordnet
   }
 
   def getSynsetsForLexeme(lexeme: String, pos: String): ju.List[BabelNetLexeme] = {

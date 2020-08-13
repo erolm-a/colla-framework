@@ -22,3 +22,4 @@ wheel==0.34.2
 scikit-learn==0.23.1
 sklearn==0.0
 rdflib-jsonld==0.5.0
+pyserini==0.8.1.0
