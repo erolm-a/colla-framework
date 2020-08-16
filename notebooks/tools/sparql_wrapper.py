@@ -60,11 +60,14 @@ class SPARQLDataProviders():
         :param query: the query to run. The query can contain placeholders in
         the form of `?placeholder`. Placeholders can be quoted in strings, and
         will be substituted regardless if provided in the `placeholders` param.
+
         :param placeholders: a dictionary of placeholder substitutions to perform.
         For security reasons the mapped value must be either a quoted string or
         an entity.
+
         :param keep_namespaces: if True, only keep the value columns and replace their
         urls with namespaces.
+
         :return: for SELECT queries, a pandas dataframe of triples.
 
         If the required columns are `foo`, `bar` etc. and keep_namespace is False

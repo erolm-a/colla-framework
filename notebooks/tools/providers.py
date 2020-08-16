@@ -83,6 +83,53 @@ class WikidataProvider(DataSourceProvider):
     def dump_full_dataset(format, revision, *args, **kwargs):
         raise Exception("Not implemented yet")
 
+    def dump_grammatical_categories(self):
+        """
+        Dump a DataFrame of Grammatical categories.
+        """
+        grammatical_categories_file = self.get_filename_path("grammatical_categories", "json")
+        if is_file(grammatical_categories_file):
+            print("Wikidata grammatical categories downloaded; skipping")
+            with wrap_open(grammatical_categories_file) as fp:
+                return pd.read_json(fp)
+
+        grammatical_categories = self.sparql.run_query("""
+        SELECT ?entity ?entityLabel
+        WHERE
+        {
+            ?entity wdt:P31/wdt:P279* wd:Q980357.
+            SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }
+        }
+        """)
+        
+        grammatical_categories = grammatical_categories[~grammatical_categories["entityLabel.xml:lang"].isna()][["entity.value", "entityLabel.value"]]
+        grammatical_categories.to_json(grammatical_categories)
+        return grammatical_categories
+    
+    def dump_pos_categories(self) -> pd.DataFrame:
+        """
+        Dump a DataFrame of POS categories.
+        """
+        pos_categories_file = self.get_filename_path("pos_categories", "json")
+
+        if is_file(pos_categories_file):
+            print("Wikidata POS categories downloaded: skipping")
+            with wrap_open(pos_categories_file) as fp:
+                return pd.read_json(fp)
+        
+        pos_categories = wikidata_sparql.run_query("""
+        SELECT ?entity ?entityLabel
+        WHERE
+        {
+        ?entity wdt:P31 wd:Q82042.
+        SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+        }
+        """)
+
+        pos_categories = pos_categories[~pos_categories["entityLabel.xml:lang"].isna()][["entity.value", "entityLabel.value"]]
+        pos_categories.to_json(pos_categories)
+        return pos_categories
+
     
 class DBPediaProvider(DataSourceProvider):
     def get_dump_url(self, entity, format, *args, **kwargs):
@@ -309,6 +356,11 @@ class FusekiProvider(DataSourceProvider):
         """
         return self.fuseki_sparql.run_query(query)['grammaticalCategoryLabel.value']
 
+
+    def dump_pos_categories(self):
+        query = """
+        SELECT ?posEntity ?posLabel
+        """
     @staticmethod
     def dump_full_dataset(self, format, flavour, *args, **kwargs):
         if format != "ttl":

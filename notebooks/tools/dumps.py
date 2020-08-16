@@ -1,3 +1,10 @@
+"""
+This module provides some convenience functions for when downloading
+or fetching data dumps. When cloning this repo, the data folder will be
+initially empty. This module helps populating the folder without having
+to manually create subfolders or making unrequired pollution.
+"""
+
 import os
 import requests
 import wget
@@ -8,10 +15,15 @@ DATA_FOLDER = "data"
 
 
 def get_filename_path(filename):
+    """Prefix a filename with the DATA_FOLDER."""
     return os.path.join(DATA_FOLDER, filename)
 
 def wrap_open(filename, *args, **kwargs):
-    """wrapper to python's open() that prepends DATA_FOLDER"""
+    """Wrapper to python's open() that prepends DATA_FOLDER.
+    
+    If a user provides a open-shaped `handler` as kwarg it will be used
+    instead.
+    """
     path = get_filename_path(filename)
     basefolder = os.path.join(DATA_FOLDER, os.path.split(filename)[0])
     os.makedirs(basefolder, exist_ok=True)
@@ -25,10 +37,15 @@ def wrap_open(filename, *args, **kwargs):
 
 
 def is_file(filename):
+    """Wrapper for os.path.isfile that automatically prefixes a filename"""
     return os.path.isfile(get_filename_path(filename))
 
 
 def download_to(url: str, filename: str):
+    """
+    Wrapper to wget that prefixes the destination file and possibly creates
+    all the required subfolders
+    """
     # touch and create the directories
     path = get_filename_path(filename)
     basefolder = os.path.join(DATA_FOLDER, os.path.split(filename)[0])

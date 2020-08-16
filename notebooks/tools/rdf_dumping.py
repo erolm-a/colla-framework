@@ -11,12 +11,10 @@ from rdflib.extras.infixowl import Class
 from .dumps import wrap_open
 from .providers import WikidataProvider
 
-with wrap_open("wikidata/grammatical_categories.json") as fp:
-    wikidata_grammatical_categories = pd.read_json(fp)
+wikidata_provider = WikidataProvider()
 
-with wrap_open("wikidata/pos_categories.json") as fp:
-    pos_categories = pd.read_json(fp)
-
+wikidata_grammatical_categories = wikidata_provider.dump_grammatical_categories()
+wikidata_pos_categories = wikidata_provider.dump_pos_categories()
 
 # Namespaces we are going to use here...
 namespaces = {
@@ -26,7 +24,9 @@ namespaces = {
     "wd": "http://www.wikidata.org/entity/",
     "wdt": "http://www.wikidata.org/prop/direct/",
     "kgl": "http://grill-lab.org/kg/entity/",
-    "kglprop": "http://grill-lab.org/kg/property/"
+    "kglprop": "http://grill-lab.org/kg/property/",
+    "lexinfo": "http://www.lexinfo.net/ontology/2.0/lexinfo#",
+    "bn": "http://babelnet.org/rdf/page/",
 }
 
 namespaces = dict((key, Namespace(val)) for (key, val) in namespaces.items())
@@ -53,7 +53,8 @@ kgl_definition = kgl_prop.definition
 grammaticalFeature = kgl_prop.grammaticalFeature
 kgl_label = kgl_prop.label
 example_link = kgl_prop.example
-
+lexinfo = namespaces["lexinfo"]
+bn = namespaces['bn']
 
 class ExtractorGraph:
     """A Wrapper to rdflib's Graph that extracts from Wiktionary and BabelNet."""
@@ -90,8 +91,6 @@ class ExtractorGraph:
         self.form_counter = defaultdict(int)
         self.sense_counter = defaultdict(int)
 
-        grammaticalCategory = Class(kgl.GrammaticalCategory, graph=g)
-        
         self.populate_categories()
 
     @staticmethod
@@ -113,12 +112,51 @@ class ExtractorGraph:
         except StopIteration:
             return False
 
+    def link_pos(self, pos):
+        """
+        Given a string representation of a pos, return the closest match
+        """
+
+        pos = pos.lower()
+
+        if pos in self.all_pos:
+            return kgl[pos]
+
+        # Known cases
+        wiktionary_poses = {
+            # Abbreviations are not special enough to be a new POS,
+            "abbrev": "noun",
+            "name": "propername",
+            "num": "number",
+            "conj": "conjunction",
+            "det": "determiner",
+            "prep": "preposition",
+            "postp": "postposition",
+            "punct": "punctuation",
+            "adj": "adjective",
+            "adv": "adverb",
+            "pron": "pronoun",
+            "intj": "interjection"
+        }
+
+        # TODO: consider adding UniversalPOS or other POS providers
+
+        if pos in wiktionary_poses:
+            return kgl[wiktionary_poses[pos]]
+        else:
+            return None
+
+
     def populate_categories(self):
         """
         Init the graph by harvesting a list of categories.
         """
-        category_dict = {}
         g = self.g
+        self.grammaticalCategory = Class(kgl.GrammaticalCategory, graph=g)
+        self.pos = Class(kgl['POS'], graph=g)
+
+        category_dict = {}
+
         self.categories = category_dict
 
         for row in wikidata_grammatical_categories.iterrows():
@@ -128,10 +166,31 @@ class ExtractorGraph:
             category_dict[label] = kgl[grammatical_form]
             g.add((kgl[grammatical_form], rdfs_label, Literal(label)))
             g.add((kgl[grammatical_form], sameAs, URIRef(wikidata_identifier)))
+        
 
         # Wikidata is a horrible mess
-        # Apparently some of the most beefy categories are not (in)direct subclasses
-        # of "grammatical categories".
+        # Apparently some of the most beefy categories are not (in)direct
+        # subclasses of "grammatical categories".
+        # Unfortunately, the same applies with POS - which contain more cruft
+        # than anything else.
+
+        lexinfo_pos = {'verb', 'adposition', 'adjective', 'adverb', 'noun',
+                       'determiner', 'article', 'particle', 'pronoun',
+                       'symbol'}
+        
+        other_pos = {"conjunction", "preposition", "postposition", "proverb",
+                          "prefix", "affix", "letter", "punctuation", "interjection",
+                          "propername"}
+        
+        self.all_pos = other_pos.union(lexinfo_pos)
+
+        for pos in lexinfo_pos:
+            g.add((kgl[pos], sameAs, lexinfo[pos]))
+        
+        for pos in self.all_pos:
+            g.add((kgl[pos], rdf_type, self.pos.identifier))
+
+
         extra_noun_categories = ["countable", "uncountable", "irregular",
                                       "usually uncountable", "unattested plural",
                                       "uncertain plural"]
@@ -320,6 +379,9 @@ class ExtractorGraph:
         """
         g = self.g
         word = row['word']
+        lang = row['lang']
+        if lang is None:
+            return
         senses = row['senses']
         pos = row['pos']
         noun_forms = row['noun_forms']
@@ -330,10 +392,14 @@ class ExtractorGraph:
         lexeme_id = kgl[word_id]
         if not self.is_in_graph(word_id):
             g.add((lexeme_id, namespaces['rdf'].type, kgl.Lexeme))
-            g.add((lexeme_id, pos_link, kgl[pos]))
+            _pos = self.link_pos(pos)
+            if(_pos == None):
+                print(word, pos)
+            g.add((lexeme_id, pos_link, self.link_pos(pos)))
             g.add((lexeme_id, kgl_label, Literal(word, lang="en")))
             g.add((lexeme_id, rdfs_label, Literal(word, lang="en")))
-            # g.add((lexeme_id, namespace['dct'].language, something_for_english_language))
+            g.add((lexeme_id, namespaces['dct'].language, namespaces['dct'][lang]))
+            g.add((lexeme_id, kgl_prop['language'], kgl[lang]))
 
 
         # Detect collision by just looking at the word label.
