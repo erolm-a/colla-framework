@@ -164,7 +164,7 @@ class ExtractorGraph:
             wikidata_identifier = row[1]['entity.value']
             grammatical_form = self.hash(label, "grammatical_category")
             category_dict[label] = kgl[grammatical_form]
-            g.add((kgl[grammatical_form], rdfs_label, Literal(label)))
+            g.add((kgl[grammatical_form], rdfs_label, Literal(label))) 
             g.add((kgl[grammatical_form], sameAs, URIRef(wikidata_identifier)))
         
 
@@ -176,7 +176,7 @@ class ExtractorGraph:
 
         lexinfo_pos = {'verb', 'adposition', 'adjective', 'adverb', 'noun',
                        'determiner', 'article', 'particle', 'pronoun',
-                       'symbol'}
+                       'symbol', 'suffix'}
         
         other_pos = {"conjunction", "preposition", "postposition", "proverb",
                           "prefix", "affix", "letter", "punctuation", "interjection",
@@ -205,13 +205,19 @@ class ExtractorGraph:
                      extra_adjective_categories:
                 cat_id = self.add_category(cat)
                 category_dict[cat] = cat_id
+
+
+    @property
+    def rdflib_graph(self) -> Graph:
+        """Return the internal RDFLIB graph"""
+        return self.g
         
     def add_category(self, label):
         g = self.g
         cat_id = kgl[self.hash(label, "grammatical_category")]
         g.add((cat_id, rdfs_label, Literal(label)))
         g.add((cat_id, kgl_label, Literal(label)))
-        g.add((cat_id, rdf_type, kgl.GrammaticalCategory))
+        g.add((cat_id, rdf_type, self.grammaticalCategory))
         return cat_id
 
     def add_form(self, word_id: str, lexeme_id: URIRef, label: str):
@@ -391,10 +397,12 @@ class ExtractorGraph:
         word_id = self.hash(word, pos)
         lexeme_id = kgl[word_id]
         if not self.is_in_graph(word_id):
-            g.add((lexeme_id, namespaces['rdf'].type, kgl.Lexeme))
             _pos = self.link_pos(pos)
             if(_pos == None):
-                print(word, pos)
+                print(f"pos {pos} for word {word} not recognized, this entry will be ignored")
+                return
+
+            g.add((lexeme_id, namespaces['rdf'].type, kgl.Lexeme))
             g.add((lexeme_id, pos_link, self.link_pos(pos)))
             g.add((lexeme_id, kgl_label, Literal(word, lang="en")))
             g.add((lexeme_id, rdfs_label, Literal(word, lang="en")))

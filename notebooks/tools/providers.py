@@ -5,8 +5,8 @@ from os.path import join
 import pandas as pd
 
 from .sparql_wrapper import WikidataQuery, FusekiQuery
-
 from .dumps import is_file, download_to, wrap_open
+
 
 class DataSourceProvider(ABC):
     def __init__(self):
@@ -57,6 +57,7 @@ class DataSourceProvider(ABC):
 
 
 class WikidataProvider(DataSourceProvider):
+    """Provider for Wikidata"""
     def __init__(self):
         self.sparql = WikidataQuery()
 
@@ -132,6 +133,7 @@ class WikidataProvider(DataSourceProvider):
 
     
 class DBPediaProvider(DataSourceProvider):
+    """Provider for DBPedia"""
     def get_dump_url(self, entity, format, *args, **kwargs):
         """Extract a dbpedia entity. Very simple and crude. More sofisticated
         queries should use a SPARQLWrapper.
@@ -155,6 +157,16 @@ class DBPediaProvider(DataSourceProvider):
 
 
 class WiktionaryProvider(DataSourceProvider):
+    """
+    Provider for the RESTFul API of Wiktionary.
+
+    The API endpoint is available here: 
+    https://en.wiktionary.org/api/rest_v1
+
+    Note: its usage is deprecated as a small amount of information is indeed
+    available. Users should use the  wiktextract pipeline to extract
+    definitions, or `FusekiProvider` for ready-made results.
+    """
     def get_dump_url(self, entity, format, *args, **kwargs):
         if format != "json":
             raise Exception("Unsupported non-json formats")
@@ -358,9 +370,22 @@ class FusekiProvider(DataSourceProvider):
 
 
     def dump_pos_categories(self):
-        query = """
-        SELECT ?posEntity ?posLabel
         """
+        Dump the POS categories.
+        POS entities in the KG are guaranteed to have human-readable names.
+        Thus, one can easily remove the kgl prefix to obtain standalone
+        labels.
+        """
+        query = """
+        SELECT ?posEntity
+        WHERE
+        {
+            ?posEntity a kgl:POS.
+        }
+        """
+        return self.fuseki_sparql.run_query(query, keep_namespaces=True)
+        
+        
     @staticmethod
     def dump_full_dataset(self, format, flavour, *args, **kwargs):
         if format != "ttl":
@@ -368,3 +393,52 @@ class FusekiProvider(DataSourceProvider):
         basefile = f"fuseki/dump-{flavour}.ttl"
         url = f"http://knowledge-glue-fuseki-jeffstudentsproject.ida.dcs.gla.ac.uk/{flavour}/data"
         download_to(url, basefile)
+
+################ Word lists #################
+
+class Wordlist(ABC):
+    def __init__(self):
+        pass
+
+    @staticmethod
+    @abstractmethod
+    def get_wordlist():
+        """
+        Get a list of words
+        """
+        pass
+
+def scrape_wiktionary_wordlists(url: str, name: str):
+    filename = "wordlists/" + name
+    download_to(url, filename)
+    with wrap_open(filename) as fp:
+        parsed = BeautifulSoup(fp.read(), "html.parser")
+        tables = parsed.find_all("table")
+        table = tables[0]
+        rows = table.find_all("tr")[1:]
+        cols = [row.find_all("td")[1].find("a").text for row in rows]
+    
+    return cols
+
+class WiktionaryTV(Wordlist):
+    """
+    Extract from the list of 1,000 most common words in TV scripts between 2000 and 2006.
+    For a more complete explanation on how this data was harvested see here:
+
+    https://en.wiktionary.org/wiki/Wiktionary:Frequency_lists/TV/2006/explanation
+    """
+
+    @staticmethod
+    def get_wordlist():
+        return scrape_wiktionary_wordlists("https://en.wiktionary.org/wiki/Wiktionary:Frequency_lists/TV/2006/1-1000", "wdtv.txt")
+
+
+class WiktionaryProjectGutenberg(Wordlist):
+    """
+    Extract from the list of 10.000 common words of the Project Gutenberg
+    """
+    @staticmethod
+    def get_wordlist():
+        return scrape_wiktionary_wordlists("https://en.wiktionary.org/wiki/Wiktionary:Frequency_lists/TV/2006/1-1000", "wdpg.txt")
+
+

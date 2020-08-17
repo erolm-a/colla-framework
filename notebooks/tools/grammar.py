@@ -313,7 +313,7 @@ def concatenate(sems):
 rules_definition = [
     Rule('$ROOT', '$DefinitionQuery', sems_0),
     Rule('$DefinitionQuery', '$DefinitionQueryElements',
-         lambda sems: merge_dicts({'intent': 'definition'}, sems[0])),
+         lambda sems: merge_dicts({'intent': 'define'}, sems[0])),
     Rule('$DefinitionQueryElements', '$DefinitionQuestion $NounPhrase',
          merge_dicts_singleparam),
     
@@ -341,6 +341,8 @@ rules_determiner = [
     Rule('$Determiner', 'the'),
     Rule('$Determiner', 'about the'),
     Rule('$Determiner', 'its'),
+    Rule('$Determiner', "any"),
+    Rule('$Determiner', "some"),
 ]
 
 rules_be = [
@@ -349,6 +351,8 @@ rules_be = [
     Rule("$Be", "'s"),
     Rule("$Be", "were"),
     Rule("$Be", "was"),
+    Rule("$Be", "be"),
+    Rule("$Be", "being"),
 ]
 
 rules_wordsenses = [
@@ -363,8 +367,6 @@ rules_wordsenses = [
     Rule("$WordSense", "field"),
 ]
 
-
-
 def merge_dict_type_builder(type_):
     def f(sems):
         return merge_dicts({'type': type_, 'value': sems[4]}, sems[1])
@@ -373,6 +375,7 @@ def merge_dict_type_builder(type_):
 rules_filter = [
     Rule('$ROOT', '$FilterQuery', lambda sems: merge_dicts({'intent': 'filter'}, sems[0])),
     # Tell me about...
+    Rule('$FilterQuery', '?$ShowVerb $FilterQueryElements', sems_1),
     Rule('$FilterQuery', '?$ShowVerb ?$StopWord $FilterQueryElements', sems_2),
     # What about...
     Rule('$FilterQuery', 'what about $FilterQueryElements', sems_2),
@@ -431,16 +434,14 @@ rules_filter = [
     Rule('$FilterCategoryQuery', "$WhatFilter $Category", sems_1),
     Rule('$FilterCategoryQuery', "$Category $?More $Extra", merge_dicts_singleparam),
     
-    
     Rule('$More', "more"),
     Rule('$More', "more about"),
     Rule('$More', "some"),
     Rule('$More', "some some"),
+    Rule('$More', "any"),
     Rule('$More', 'possible'),
     Rule('$More', 'available'),
-    
 
-    
     Rule("$Only", "only"),
     Rule("$Only", "alone"),
     
@@ -489,6 +490,82 @@ rules_words = [
     Rule('$Word', 'lexemes'),
     Rule('$Word', 'lemma'),
     Rule('$Word', 'lemmas'),
+]
+
+rules_decide = [
+    Rule('$ROOT', '$DecideQuery',
+         lambda sems: merge_dicts({'intent': 'decide'}, sems[0])),
+    
+    # is it a noun?
+    Rule('$DecideQuery', '$Be $DecideQuerySubject ?$Determiner $DecideQueryObject',
+        merge_dicts_singleparam),
+    
+    Rule('$DecideQuery', 'can $DecideQuerySubject $Be ?$Determiner $DecideQueryObject',
+         merge_dicts_singleparam),
+    
+    # can reticence be used as a noun
+    Rule('$DecideQuery', 'can $DecideQuerySubject ?$Be $UsedLike $DecideQueryObject',
+         merge_dicts_singleparam),
+    
+    Rule('$DecideQuery', 'can $DecideQuerySubject $Have ?$Determiner $DecideQueryObject',
+         merge_dicts_singleparam),
+    
+    Rule('$DecideQuery', '$Do $DecideQuerySubject $Have ?$Determiner $DecideQueryObject',
+         merge_dicts_singleparam),
+    
+    
+    # do adverbs have comparatives?
+    Rule('$DecideQuery', '$Do $DecideQuerySubject $Have $DecideQueryObject',
+         merge_dicts_singleparam),
+    
+    
+    Rule('$DecideQuerySubject', "it"),
+    Rule('$DecideQuerySubject', "$POS",
+         lambda sems: {"filtertype": "grammatical", "requiredPos": sems[0]}),
+    
+    # "is family a noun?"
+    Rule('$DecideQuerySubject', "$NounPhrase", sems_0),
+    
+    # is it a noun
+    Rule('$DecideQueryObject', "$POS",
+         lambda sems: {'filtertype': 'grammatical', 'requiredPos': sems[0]}),
+    
+    # is it a comparative
+    Rule('$DecideQueryObject', "$GrammaticalFeature ?$FormStopword",
+         lambda sems: {'filtertype': 'grammatical', 'grammaticalFeature': sems[0]}),
+    
+    # does it have opposites?
+    Rule('$DecideQueryObject', "$Derived", sems_0),
+    
+    # does it have examples
+    Rule('$DecideQueryObject', "$Extra", sems_0),
+    
+    # is it a synonym of love?
+    Rule('$DecideQueryObject', "$Derived $StopWord $NounPhrase",
+         lambda sems: merge_dicts(sems[0], {'relatedTerm': sems[2]['np']})),
+    
+    # examples, usages, senses...
+    Rule('$DecideQueryObject', '$Extra', sems_0),
+    
+    Rule('$UsedLike', 'used as ?in ?$Determiner'),
+    Rule('$UsedLike', 'used like ?in ?$Determiner'),
+    Rule('$UsedLike', 'adopted ?in ?$Determiner'),
+    
+    Rule('$FormStopWord', "?morphological form"),
+    Rule('$FormStopWord', "morphology"),
+]
+
+rules_have = [
+    Rule("$Have", 'have'),
+    Rule("$Have", 'has'),
+    Rule("$Have", 'had'),
+    Rule("$Have", 'having'),
+    Rule("$Have", "' d")
+]
+
+rules_do = [
+    Rule("$Do", 'do'),
+    Rule("$Do", 'does'),
 ]
 
 

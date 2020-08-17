@@ -15,8 +15,15 @@ DATA_FOLDER = "data"
 
 
 def get_filename_path(filename):
-    """Prefix a filename with the DATA_FOLDER."""
-    return os.path.join(DATA_FOLDER, filename)
+    """
+    Prefix a filename with the DATA_FOLDER.
+    Also create all the base folders.
+    """
+    filename = os.path.join(DATA_FOLDER, filename)
+    basefolder = os.path.split(filename)[0]
+    os.makedirs(basefolder, exist_ok=True)
+
+    return filename
 
 def wrap_open(filename, *args, **kwargs):
     """Wrapper to python's open() that prepends DATA_FOLDER.
@@ -25,8 +32,6 @@ def wrap_open(filename, *args, **kwargs):
     instead.
     """
     path = get_filename_path(filename)
-    basefolder = os.path.join(DATA_FOLDER, os.path.split(filename)[0])
-    os.makedirs(basefolder, exist_ok=True)
 
     if "handler" in args:
         handler = kwargs["handler"]
@@ -48,7 +53,5 @@ def download_to(url: str, filename: str):
     """
     # touch and create the directories
     path = get_filename_path(filename)
-    basefolder = os.path.join(DATA_FOLDER, os.path.split(filename)[0])
-    os.makedirs(basefolder, exist_ok=True)
-    print(url)
+    # print(url)
     wget.download(url, get_filename_path(filename), bar=wget.bar_thermometer)
