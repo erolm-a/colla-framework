@@ -201,8 +201,12 @@ class ExtractorGraph:
                                             "not comparable", "comparable-only",
                                             "generally not comparable"]
 
+        wikidata_grammatical_categories_list = \
+            wikidata_grammatical_categories['entityLabel.value'].to_list()
+
         for cat in extra_noun_categories + extra_verb_categories + \
-                     extra_adjective_categories:
+                     extra_adjective_categories + \
+                     wikidata_grammatical_categories_list:
                 cat_id = self.add_category(cat)
                 category_dict[cat] = cat_id
 
@@ -217,7 +221,7 @@ class ExtractorGraph:
         cat_id = kgl[self.hash(label, "grammatical_category")]
         g.add((cat_id, rdfs_label, Literal(label)))
         g.add((cat_id, kgl_label, Literal(label)))
-        g.add((cat_id, rdf_type, self.grammaticalCategory))
+        g.add((cat_id, rdf_type, self.grammaticalCategory.identifier))
         return cat_id
 
     def add_form(self, word_id: str, lexeme_id: URIRef, label: str):
