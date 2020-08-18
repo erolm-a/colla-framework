@@ -6,6 +6,7 @@ import pandas as pd
 
 from .sparql_wrapper import WikidataQuery, FusekiQuery
 from .dumps import is_file, download_to, wrap_open
+import tempfile
 
 
 class DataSourceProvider(ABC):
@@ -410,15 +411,25 @@ class Wordlist(ABC):
 
 def scrape_wiktionary_wordlists(url: str, name: str):
     filename = "wordlists/" + name
-    download_to(url, filename)
-    with wrap_open(filename) as fp:
-        parsed = BeautifulSoup(fp.read(), "html.parser")
-        tables = parsed.find_all("table")
-        table = tables[0]
-        rows = table.find_all("tr")[1:]
-        cols = [row.find_all("td")[1].find("a").text for row in rows]
-    
-    return cols
+    if not is_file(filename):
+        download_to(url, filename + ".html")
+        # TODO: make this file temporary
+        with wrap_open(filename + ".html") as fp:
+            parsed = BeautifulSoup(fp.read(), "html.parser")
+            tables = parsed.find_all("table")
+            words = []
+            for table in tables:
+                rows = table.find_all("tr")[1:]
+                cols = [row.find_all("td")[1].find("a").text for row in rows]
+                words.extend(cols)
+            with wrap_open(filename, "w") as save_fp:
+                save_fp.writelines([word + "\n" for word in words])
+                
+        return cols
+    else:
+        with wrap_open(filename) as fp:
+            return [word.strip() for word in fp.readlines()]
+
 
 class WiktionaryTV(Wordlist):
     """
@@ -439,6 +450,6 @@ class WiktionaryProjectGutenberg(Wordlist):
     """
     @staticmethod
     def get_wordlist():
-        return scrape_wiktionary_wordlists("https://en.wiktionary.org/wiki/Wiktionary:Frequency_lists/TV/2006/1-1000", "wdpg.txt")
+        return scrape_wiktionary_wordlists("https://en.wiktionary.org/wiki/Wiktionary:Frequency_lists/PG/2006/04/1-10000", "wdpg.txt")
 
 
