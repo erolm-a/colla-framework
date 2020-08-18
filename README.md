@@ -21,3 +21,7 @@ One needs to:
 Go to `webui/frontend` and run `npm install && npm run build`.
 
 - Run the flask webserver.  Go to `webui/backend` and run `python app.py` (or use the flask command).
+
+## Future Work
+
+See [here](futurework.md) for details.
