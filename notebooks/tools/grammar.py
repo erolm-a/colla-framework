@@ -569,9 +569,9 @@ rules_do = [
 ]
 
 
-ruleset = rules_be + rules_definition + rules_determiner + \
-          rules_filter + rules_words + rules_wordsenses + \
-          rules_derived
+ruleset = rules_be + rules_have + rules_do + rules_definition + \
+          rules_determiner + rules_filter + rules_words + \
+          rules_wordsenses + rules_derived + rules_decide
 annotators = [StopWordAnnotator(), ShowVerbAnnotator(),
                 TokenAnnotatorBuilder("$UnquotedToken", ["'", '"', "?", ","]), # commas must split noun phrases
                 OrdinalNumberAnnotator(), POSAnnotator(),
