@@ -1,9 +1,6 @@
 [submodule "notebooks/3rdparty/wiktextract"]
 	path = notebooks/3rdparty/wiktextract
-	url = https://github.com/tatuylonen/wiktextract.git
-[submodule "notebooks/3rdparty/babelnetpy"]
-	path = notebooks/3rdparty/babelnetpy
-	url = https://github.com/jackee777/babelnetpy
+	url = https://github.com/erolm_a/wiktextract.git
 [submodule "notebooks/3rdparty/sippycup"]
 	path = notebooks/3rdparty/sippycup
 	url = https://github.com/wcmac/sippycup
