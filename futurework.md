@@ -1,10 +1,21 @@
 # Future Work
 
+
+## On dataset collection
+
+We are using Pyserini for harvesting questions from GoogleNLQ as our sole data source.
+It would be nice to inspect other data sources (if available), maybe launching a
+commercial version of this product and collect user feedback.
+
 ## On KG generation
 
 The current KG relies on the correctness of Wiktionary and BabelNet. The former one is a voluntary project, thus it's expectable many results may be broken and/or incomplete and/or inconsistent. For example, we glossed the problem of repeated word entries by just squashing the senses.
 
 The quality of the extraction is heavily dependent on Tatu Ylonen's wiktextract project. We wrote a PR to improve the existing support so that senses, subsenses and usages were captured, but so far they are underused in the final KG. The same applies to a number of fields not used in the final RDF dump like IPA pronunciation or target translations. The latter is indeed paramount for a linguistic KG and will be likely among the most prioritized tasks.
+
+Other technical problems include:
+
+- lack of form support for non-English lexemes. It seems Tatu Ylonen released support for form generation via Lua template script sandboxing a few weeks after we wrote a custom generator (which is a mere Python port of the lua script)
 
 ## On utterance parsing
 
@@ -14,7 +25,7 @@ One could try to:
 
 - Add ML on the grammar rather than relying on a potentially forgetful and/or bugged greedy picker.
 - Finetune a seq2seq model that translated into classical intent-slots, for example finetune a pretrained BART on linguistic question detection and translation.
-- Scrap the intent system and use a more powerful query rewriter system.
+- Scrap the intent system and use a more powerful query rewriter system. Approaches like this are hardly introspectable and require massive datasets, so we assume this won't happen in the near future.
 
 ## On intent-query translation
 
