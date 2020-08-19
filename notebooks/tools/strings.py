@@ -1,4 +1,7 @@
 from text_to_num import alpha2digit
+import mmh3
+import base64
+
 
 def strip_prefix(prefix, string):
     if string.startswith(prefix):
@@ -32,3 +35,12 @@ def convert_ordinal(word: str):
         return int(converted)
     except:
         return None
+
+
+def hash(word, pos):
+    """
+    Tool function to generate unique identifiers for the lexemes.
+    """
+    mmhash = mmh3.hash64(word + pos, signed=False)[0]
+    mmhash = int.to_bytes(mmhash, 8, "big")
+    return bytes.decode(base64.b32encode(mmhash)).rstrip("=").lower()

@@ -1,14 +1,21 @@
 """
-A collection of Wiktionary template extractors
+A collection of Wiktionary template extractors.
+
+Nota Bene: as of Aug 19, 2020 Tatu Ylonen has finished writing a form extractor
+within wiktionary. Thus, all the form extractors below are to be deprecated.
 """
 
 import re
-from pyspark.sql.functions import udf, struct, explode
-from pyspark.sql.types import ArrayType, StringType, StructType, StructField, BooleanType
+from pyspark.sql.dataframe import DataFrame
+from pyspark.sql.column import Column
+from pyspark.sql.functions import col, explode, struct, udf
+from pyspark.sql.types import (ArrayType, StringType, StructType, StructField,
+                               BooleanType, DataType)
 from functools import reduce
+from .strings import hash
+from typing import Any, Dict, List, Tuple, Optional, Union
 
-
-def english_verb_form_extractor(lexeme, head):
+def english_verb_form_extractor(lexeme: str, head: Column) -> Dict[str, Any]:
     # Decoding rules (abridged from https://en.wiktionary.org/wiki/Template:en-verb):
     # Ported from Lua (https://en.wiktionary.org/wiki/Module:en-headword)
     
@@ -96,7 +103,8 @@ def english_verb_form_extractor(lexeme, head):
             "past_ptc": past_ptc_forms}
 
 
-def make_comparative(lexeme, comp_sup_list):
+def make_comparative(lexeme: str, comp_sup_list: List[Tuple[str, str]]) \
+    -> Dict[str, Union[str, List[str]]]:
     if len(comp_sup_list) == 0:
         comp_sup_list.append(("more", None))
     
@@ -132,7 +140,7 @@ def make_comparative(lexeme, comp_sup_list):
     return {"lexeme": lexeme, "comparatives": comp_forms, "superlatives": sup_forms}
     
 
-def english_adjective_form_extractor(lexeme, head):
+def english_adjective_form_extractor(lexeme: str, head: Column) -> Dict[str, Any]:
     shift = 0
     is_not_comparable = False
     is_comparable_only = False
@@ -168,11 +176,11 @@ def english_adjective_form_extractor(lexeme, head):
     
     return {**make_comparative(lexeme, params), **optional}
 
-def english_adverb_form_extractor(lexeme, head):
-    # The two take virtually the same parameters and behave in the same way
+def english_adverb_form_extractor(lexeme: str, head: Column):
+    # Adjective and adverb templates virtually the same parameters and behave in the same way
     return english_adjective_form_extractor(lexeme, head)
 
-def english_noun_form_extractor(lexeme, head):
+def english_noun_form_extractor(lexeme: str, head: Column) -> Dict[str, Any]:
     plurals = []
     # sometimes the head parameters are given to "plxqual" rather than just as
     # number parameter of the head
@@ -267,14 +275,14 @@ english_noun_schema = StructType([
     StructField("optional", StringType(), nullable=True)
 ])
 
-def udf_wrapper(func, schema, template):
+def udf_wrapper(func, schema: DataType, template):
     def func_wrapper(lexeme, head):
         if head['template_name'] == template:
             return func(lexeme, head)
     return udf(lambda row: func_wrapper(*row), schema)
     
 
-def extract_form(cursor):
+def extract_form(cursor: DataFrame) -> DataFrame:
     # assuming the cursor only works on lexemes (FIXME)
     udf_verbs = udf_wrapper(english_verb_form_extractor, english_verb_schema, "en-verb")
     udf_adjs = udf_wrapper(english_adjective_form_extractor, english_adjective_schema, "en-adj")
@@ -289,7 +297,7 @@ def extract_form(cursor):
     
     return cursor
 
-def extract_df(dataframe, word = None):
+def extract_df(dataframe: DataFrame, word: Optional[str] = None) -> DataFrame:
     """Explode the heads of the entry, and potentially filter by word"""
 
     current_cursor = dataframe.withColumn("head", explode("heads")).drop("heads")
@@ -298,3 +306,68 @@ def extract_df(dataframe, word = None):
         current_cursor = current_cursor.where(dataframe.word == word)
         
     return current_cursor
+
+def convert_to_jsonl(cursor: DataFrame, index_output: str):
+    """
+    Serialize a Wiktionary dataframe whose forms into a JSONL document that can
+    be then processed by Anserini's JsonCollection
+    """
+
+    def text_representation(lexeme, pos, senses, verb_forms, adj_forms, noun_forms, adv_forms):
+        """Generate a trivial text representation of the entry.
+        This function is used as a UDF.
+        
+        For example:
+        
+        ```
+        love (noun), id: kgl:1udqijwqaje2
+        1. strong affection towards someone
+
+        forms: love, loves
+        ```
+        """
+        message = f"{lexeme} ({pos}), id: kgl:{hash(lexeme, pos)}\n"
+    
+        if senses:
+            for idx, sense in enumerate(senses):
+                message += f"{idx}. {sense['glosses'][0] if sense['glosses'] else ''}\n"
+
+            if verb_forms:
+                message += f"forms: {verb_forms['pres_ptc']}, {verb_forms['pres_3sg']}, {verb_forms['past']}, {verb_forms['past_ptc']}"
+            if noun_forms and noun_forms['plurals']:
+                message += f"forms: {', '.join(noun_forms['plurals'])}"
+            if adj_forms:
+                message += "forms:"
+                if adj_forms.superlatives and all(adj_forms.comparatives):
+                    message += "\ncomparatives:\n"
+                    message += ", ".join(adj_forms.comparatives)
+                if adj_forms.superlatives and all(adj_forms.superlatives):
+                    message += "\nsuperlatives:\n"
+                    message += ", ".join(adj_forms.superlatives)
+
+            if adv_forms:
+                message += "forms:"
+                if adv_forms.comparatives and all(adv_forms.comparatives):
+                    message += "\ncomparatives:\n"
+                    message += ", ".join(adv_forms.comparatives)
+                if adv_forms.superlatives and all(adv_forms.superlatives):
+                    message += "\nsuperlatives:\n"
+                    message += ", ".join(adv_forms.superlatives)
+
+            return message
+
+
+    udf_text_representation = udf(lambda row: text_representation(*row),
+                                        StringType())
+    udf_hash = udf(lambda row: hash(*row))
+
+    trectext_wdpg = cursor.withColumn('word_id', udf_hash(struct('word',
+                                                                 'pos')))
+    trectext_wdpg = trectext_wdpg.withColumn('trectext_content',
+                                udf_text_representation(
+                                    struct('word', 'pos', 'senses',
+                                           'verb_forms', 'adj_forms',
+                                           'noun_forms', 'adv_forms')))
+    trectext_wdpg.select([col('word_id').alias('id'),
+                          col('trectext_content').alias('contents')]) \
+                .toPandas().to_json(index_output, orient='records', force_ascii=False)   
