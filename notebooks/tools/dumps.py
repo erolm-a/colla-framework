@@ -11,7 +11,7 @@ import wget
 
 from .strings import strip_prefix
 
-DATA_FOLDER = "data"
+DATA_FOLDER = os.environ.get("COLLA_DATA_FOLDER", "data")
 
 
 def get_filename_path(filename):
