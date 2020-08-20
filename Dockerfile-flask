@@ -17,7 +17,7 @@
 # all it does is starting npm to build the frontend so that the js blob can be
 # served by flask. Flask was already installed in the previous image and is
 # properly launched in the Pod yaml file.
-FROM erolmatei/colla-framework-base:0.1
+FROM erolmatei/colla-framework-base:latest
 
 USER root
 

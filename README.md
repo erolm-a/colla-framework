@@ -1,4 +1,9 @@
-# knowledge-glue
+# ColLa: Conversational framework for Linguistic Agents
+
+Base:
+[![](https://images.microbadger.com/badges/version/erolmatei/colla-framework-base.svg)](https://microbadger.com/images/erolmatei/colla-framework-base "Get your own version badge on microbadger.com")
+
+Flask: [![](https://images.microbadger.com/badges/version/erolmatei/colla-framework-flask.svg)](https://microbadger.com/images/erolmatei/colla-framework-flask "Get your own version badge on microbadger.com")
 
 ## Setup
 
@@ -21,6 +26,7 @@ TODO
 ## Jupyter Development/Testing Pod
 
 This pod is useful for running the notebooks.
+Remember to update your `COLLA_DATADIR`
 
 ```yaml
 apiVersion: v1
@@ -33,9 +39,12 @@ metadata:
 spec:
   containers:
     - name: spark-jena-jupyter
-      image: erolmatei/colla-framework-base:0.1
+      image: erolmatei/colla-framework-base:latest
       ports:
         - containerPort: 8888
+          name: "jupyter-lab"
+        - containerPort: 4040
+          name: "spark-ui"
       resources:
         cpu: "12000m"
         memory: "16Gi"
@@ -47,6 +56,9 @@ spec:
         - '--allow-root'
         - '--NotebookApp.token='
         - '--notebook-dir=/root' # Be sure to change this to /nfs when developing
+      env:
+        - name: COLLA_DATADIR
+          value: "/nfs/colla-framework/notebooks/data" # example of custom DATADIR on a persistent volume claim
       volumeMounts:
         - mountPath: /nfs/
           name: nfs-access
