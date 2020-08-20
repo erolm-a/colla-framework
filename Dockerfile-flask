@@ -24,15 +24,15 @@ USER root
 RUN apt-get update
 RUN apt-get install -y nodejs npm
 
-WORKDIR /root/colla-framework/webui/frontend
+RUN cp -r /root/colla-framework /home/jovyan/colla-framework
+RUN chown -R jovyan:users /home/jovyan/colla-framework
+
+# We now switch to jovyan for security reasons
+WORKDIR /home/jovyan/colla-framework/webui/frontend
+USER jovyan
+
 RUN pwd
 RUN npm install
 RUN npm run build
 
-WORKDIR /root/colla-framework
-
-RUN cp -r /root/colla-framework /home/jovian/colla-framework
-RUN chown -R jovian:jovyan /home/jovian/colla-framework
-
-# We now switch to jovian for safety reasons
-USER jovian
+WORKDIR /home/jovyan/colla-framework/webui/backend
