@@ -17,9 +17,4 @@ python3 -m spylon_kernel install
 cd notebooks
 ./setup_babelnet.sh
 
-# Compile our BabelNet bridge
-mkdir tools/BabelNet/lib
-cp 3rdparty/lucene-index/*.jar tools/BabelNet/lib/
-cp 3rdparty/lucene-index/lib/*.jar tools/BabelNet/lib/
-cd tools/BabelNet
-sbt compile && sbt package
+
