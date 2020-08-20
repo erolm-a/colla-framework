@@ -5,7 +5,17 @@ Base:
 
 Flask: [![](https://images.microbadger.com/badges/version/erolmatei/colla-framework-flask.svg)](https://microbadger.com/images/erolmatei/colla-framework-flask "Get your own version badge on microbadger.com")
 
+## Description
+
+ColLa is a simple research project about linguistic-oriented conversational agents. This project comes with a Knowledge Graph generator and a small PoC chatbot for testing purposes.
+
+This project was started as a Summer Research Internship project by Enrico Trombetta ([@erolm-a](https://github.com/erolm-a)) and handed over to the Grill Lab.
+
+A better explanation and overview of its architecture can be found under the [presentation](https://github.com/grill-lab/knowledge-glue/tree/master/presentation) folder.
+
 ## Setup
+
+Setting up this project from scratch will take you some time and patience, so please grab some tea and read carefully.
 
 If you are cloning this repo, be sure to [install git-lfs](https://github.com/git-lfs/git-lfs/wiki/Installation) first, or you *will* have problems with dangling LFS pointers later.
 
@@ -19,9 +29,6 @@ You also need to download the BabelNet indices, which unfortunately cannot be au
 - Apply for the > 29 GB  indices dataset.
 - Download it and extract it under your `$COLLA_BABELNET_INDEX`. This location should now have about 44 folders (each being a Lucene index) and 4 files.
 
-## RDF Extraction setup
-
-TODO
 
 ## Jupyter Development/Testing Pod
 
@@ -73,14 +80,34 @@ spec:
 
 If you are developing it may be profitable to copy the whole source tree from `/root/colla-framework` to the volume claim and then `git checkout master`, and use `--notebook-dir=/nfs` otherwise you can't navigate to /nfs from the jupyter browser. This is useful because the volume claim is much more stable.
 
-## Webserver setup
+Also, it may be useful to get the Spark UI to work during development. See [here](https://jupyter-docker-stacks.readthedocs.io/en/latest/using/specifics.html#apache-spark) for details.
 
-One needs to:
+## RDF Extraction setup
 
-- Build the Web Application UI. This requires to install node and npm with all the required dependencies for the webapp, run the build and generate a dist folder.
-Go to `webui/frontend` and run `npm install && npm run build`.
+You need to generate some RDF triples in order to import them in our Fuseki server.
 
-- Run the flask webserver.  Go to `webui/backend` and run `python app.py` (or use the flask command).
+Inside the notebook pod we opened earlier, execute the following:
+
+```bash
+"tools/rdf_extractor.py --wiktionary-revision=20200720 --wordlist=wdpg --output=output/wdpg.ttl"
+```
+
+This commands will fetch the Wiktionary dump revision "20200720" and perform extraction and entity linking on the Wiktionary frequency list extracted from Project Gutenberg. The output will be generated at ``$COLLA_DATADIR/output/wdpg.ttl`` in Turtle format, which can be easily imported in Fuseki.
+
+You can also perform this command as a standalone pod.
+
+## Fuseki for KG endpoint
+
+Unfortunately, we still do not have an automatized way to start Fuseki with a RDF triple straight away (yet), but the procedure is simple enough:
+
+1. Use [stain/jena-fuseki](https://hub.docker.com/r/stain/jena-fuseki) as documented. You should set a password for the admin account, but it only necessary for when accessing the dashboard and making update queries.
+2. Take note of the route of Fuseki. We will need it later for Flask.
+3. Go to the tab "manage datasets", then press on "add new dataset", provide a dataset name (e.g. "sample_10000_common"), choose a dataset type (we recommend "persistent"), press on "create dataset". Then upload a RDF graph that you generated [earlier](#rdf-extraction-setup).
+4. Take note of the name you chose for this dataset name as well.
+
+## Webserver for PoC
+
+The docker image [erolmatei/colla-framework-flask](https://hub.docker.com/repository/docker/erolmatei/colla-framework-flask) takes care of building up the JS blob. What you need to do is simply to create a Pod for a SPARQL provider (we'll use Fuseki as it is pretty out-of-the-box), upload a graph and then start our Flask image.
 
 ## Future Work
 
