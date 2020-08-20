@@ -1,5 +1,8 @@
 '''
 Some tools to cache datasets and query them
+
+WARNING: It has been written before we moved to Wiktionary and BabelNet.
+This module has been kept for historical relevance but should be removed.
 '''
 
 import os
