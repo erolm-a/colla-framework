@@ -15,32 +15,12 @@
 
 # This image is a simple modification of pyspark-notebook which
 # downloads the repo and installs almost every needed library.
-FROM jupyter/pyspark-notebook:f200ab964cea as intermediate
-
-USER root
-
-RUN apt-get update
-RUN apt-get install -y openssh-client git
-
-# Install Git LFS
-RUN curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | bash
-RUN apt-get install git-lfs
-RUN git lfs install
-
-
-ARG SSH_PRIVATE_KEY
-RUN mkdir /root/.ssh
-RUN echo "${SSH_PRIVATE_KEY}" > /root/.ssh/id_rsa
-RUN chmod 600 /root/.ssh/id_rsa
-
-RUN touch /root/.ssh/known_hosts
-RUN ssh-keyscan github.com >> /root/.ssh/known_hosts
-
-RUN git clone --recursive git@github.com:grill-lab/knowledge-glue.git --branch v0.0.6 --single-branch /colla-framework
-
 FROM jupyter/pyspark-notebook:f200ab964cea
 
 USER root
+
+COPY . /root/colla-framework
+
 
 # Re-install Git LFS
 RUN curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | bash
