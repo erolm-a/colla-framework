@@ -1,13 +1,3 @@
-[submodule "notebooks/3rdparty/wiktextract"]
-	path = notebooks/3rdparty/wiktextract
-	url = https://github.com/erolm-a/wiktextract.git
-	branch = feature/hierarchical_glosses
 [submodule "notebooks/3rdparty/sippycup"]
 	path = notebooks/3rdparty/sippycup
 	url = https://github.com/wcmac/sippycup
-[submodule "notebooks/3rdparty/trec-car-tools"]
-	path = notebooks/3rdparty/trec-car-tools
-	url = https://github.com/TREMA-UNH/trec-car-tools
-[submodule "notebooks/3rdparty/anserini"]
-	path = notebooks/3rdparty/anserini
-	url = https://github.com/castorini/anserini.git
