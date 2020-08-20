@@ -370,4 +370,4 @@ def convert_to_jsonl(cursor: DataFrame, index_output: str):
                                            'noun_forms', 'adv_forms')))
     trectext_wdpg.select([col('word_id').alias('id'),
                           col('trectext_content').alias('contents')]) \
-                .toPandas().to_json(index_output, orient='records', force_ascii=False)   
+                .toPandas().to_json(index_output, orient='records', force_ascii=False)

@@ -11,10 +11,10 @@ import wget
 
 from .strings import strip_prefix
 
-DATA_FOLDER = os.environ.get("COLLA_DATA_FOLDER", "data")
+DATA_FOLDER = os.environ.get("COLLA_DATA_FOLDER", os.path.join(os.getcwd(), "data"))
 
 
-def get_filename_path(filename):
+def get_filename_path(filename) -> str:
     """
     Prefix a filename with the DATA_FOLDER.
     Also create all the base folders.
@@ -41,7 +41,7 @@ def wrap_open(filename, *args, **kwargs):
     return handler(path, *args, **kwargs)
 
 
-def is_file(filename):
+def is_file(filename) -> bool:
     """Wrapper for os.path.isfile that automatically prefixes a filename"""
     return os.path.isfile(get_filename_path(filename))
 
@@ -54,4 +54,15 @@ def download_to(url: str, filename: str):
     # touch and create the directories
     path = get_filename_path(filename)
     # print(url)
-    wget.download(url, get_filename_path(filename), bar=wget.bar_thermometer)
+    wget.download(url, path, bar=wget.bar_thermometer)
+
+
+def make_lucene_index(lucene_document_collection: str, lucene_index_path: str,
+        format: str = "JavaCollection"):
+    """
+    Create a lucene document from a given collection.
+
+    This method wraps an anserini call, but also makes sure 
+    """
+
+    pass

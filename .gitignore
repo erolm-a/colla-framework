@@ -428,3 +428,8 @@ yarn-error.log
 # Ignore downloaded datasets
 data/
 notebooks/data/
+
+# Ignore some folders automatically downloaded for BabelNet
+notebooks/3rdparty/lucene-index
+notebooks/resources
+notebooks/config

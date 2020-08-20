@@ -119,7 +119,7 @@ class WikidataProvider(DataSourceProvider):
             with wrap_open(pos_categories_file) as fp:
                 return pd.read_json(fp)
         
-        pos_categories = wikidata_sparql.run_query("""
+        pos_categories = self.sparql.run_query("""
         SELECT ?entity ?entityLabel
         WHERE
         {
