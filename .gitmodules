@@ -1,3 +1,7 @@
 [submodule "notebooks/3rdparty/sippycup"]
 	path = notebooks/3rdparty/sippycup
 	url = https://github.com/wcmac/sippycup
+[submodule "notebooks/3rdparty/wiktextract"]
+	path = notebooks/3rdparty/wiktextract
+	url = https://github.com/erolm-a/wiktextract.git
+	branch = feature/hierarchical_glosses
