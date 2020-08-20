@@ -1,0 +1,31 @@
+#   Licensed to the Apache Software Foundation (ASF) under one or more
+#   contributor license agreements.  See the NOTICE file distributed with
+#   this work for additional information regarding copyright ownership.
+#   The ASF licenses this file to You under the Apache License, Version 2.0
+#   (the "License"); you may not use this file except in compliance with
+#   the License.  You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+
+# Despite the name, this image does not have much to do with Flask. Indeed,
+# all it does is starting npm to build the frontend so that the js blob can be
+# served by flask. Flask was already installed in the previous image and is
+# properly launched in the Pod yaml file.
+FROM erolmatei/colla-framework-base:0.1
+
+USER root
+
+RUN apt-get update
+RUN apt-get install -y nodejs npm
+
+WORKDIR /root/colla-framework/webui/frontend
+RUN npm install
+RUN npm run build
+
+WORKDIR /root/colla-framework
