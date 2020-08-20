@@ -15,4 +15,4 @@ python3 -m spylon_kernel install
 # This only downloads the jars, not the BabelNet index.
 # Refer to README.md for instructions on how to do this.
 cd notebooks
-setup_babelnet.sh
+./setup_babelnet.sh
