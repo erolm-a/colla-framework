@@ -15,7 +15,7 @@
 
 # This image is a simple modification of pyspark-notebook which
 # downloads the repo and installs almost every needed library.
-FROM jupyter/pyspark-notebook as intermediate
+FROM jupyter/pyspark-notebook:f200ab964cea as intermediate
 
 USER root
 
@@ -38,7 +38,7 @@ RUN ssh-keyscan github.com >> /root/.ssh/known_hosts
 
 RUN git clone --recursive git@github.com:grill-lab/knowledge-glue.git --branch v0.0.6 --single-branch /colla-framework
 
-FROM jupyter/pyspark-notebook
+FROM jupyter/pyspark-notebook:f200ab964cea
 
 USER root
 
