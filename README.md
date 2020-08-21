@@ -17,11 +17,7 @@ A better explanation and overview of its architecture can be found under the [pr
 
 Setting up this project from scratch will take you some time and patience, so please grab some tea and read carefully.
 
-If you are cloning this repo, be sure to [install git-lfs](https://github.com/git-lfs/git-lfs/wiki/Installation) first, or you *will* have problems with dangling LFS pointers later.
-
-We assume that you are going to use this project either for regression tests or for development inside a docker container. Thus, you only need to use the right image (erolmatei/colla-framework-base) which will then invoke `setup_docker.sh`. This will, in turn, install all the required libraries.
-
-When preparing the yaml file for launching one of the given services, you *should* specify a data folder to use. By default `/root/colla-framework/notebooks/data` will be used unless you specify the environment variable `COLLA_DATA_FOLDER` (which you will set in the YAML file for the pod, see below). You should set it to point to a volume claim folder, e.g. `/nfs/colla-framework/notebooks/data`.
+If you are cloning this repo while not in the docker development pod, be sure to [install git-lfs](https://github.com/git-lfs/git-lfs/wiki/Installation) first, or you *will* have problems with dangling LFS pointers later.
 
 You also need to download the BabelNet indices, which unfortunately cannot be automatized due to the dataset size and the machine-unfriendly download form. The indices path *should* be stored in another environment variable `COLLA_BABELNET_INDEX`. If not provided, the default value is `COLLA_BABELNET_INDEX=$COLLA_DATA_FOLDER/babelnet/BabelNet-4.0.1`.
 
@@ -89,7 +85,7 @@ You need to generate some RDF triples in order to import them in our Fuseki serv
 Inside the notebook pod we opened earlier, execute the following:
 
 ```bash
-"tools/rdf_extractor.py --wiktionary-revision=20200720 --wordlist=wdpg --output=output/wdpg.ttl"
+tools/rdf_extractor.py --wiktionary-revision=20200720 --wordlist=wdpg --output=output/wdpg.ttl
 ```
 
 This commands will fetch the Wiktionary dump revision "20200720" and perform extraction and entity linking on the Wiktionary frequency list extracted from Project Gutenberg. The output will be generated at ``$COLLA_DATA_FOLDER/output/wdpg.ttl`` in Turtle format, which can be easily imported in Fuseki.
