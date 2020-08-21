@@ -89,7 +89,7 @@ You need to generate some RDF triples in order to import them in our Fuseki serv
 Inside the notebook pod we opened earlier, execute the following:
 
 ```bash
-"tools/rdf_extractor.py --wiktionary-revision=20200720 --wordlist=wdpg --output=output/wdpg.ttl"
+rdf_extractor.py --wiktionary-revision=20200720 --wordlist=wdpg --output=output/wdpg.ttl
 ```
 
 This commands will fetch the Wiktionary dump revision "20200720" and perform extraction and entity linking on the Wiktionary frequency list extracted from Project Gutenberg. The output will be generated at ``$COLLA_DATA_FOLDER/output/wdpg.ttl`` in Turtle format, which can be easily imported in Fuseki.
