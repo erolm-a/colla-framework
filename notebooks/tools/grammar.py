@@ -591,7 +591,7 @@ def pick_best_semantics(parses):
         return {}
     semantics = [parse.semantics for parse in parses]
     
-    if all(parse["intent"] == "definition" for parse in semantics):
+    if all(parse["intent"] == "define" for parse in semantics):
         picked_parser = min(semantics, key=lambda parse: len(parse["np"]))
     
     else:
