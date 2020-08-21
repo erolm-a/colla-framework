@@ -5,7 +5,7 @@ from os.path import join
 import pandas as pd
 
 from .sparql_wrapper import WikidataQuery, FusekiQuery
-from .dumps import is_file, download_to, wrap_open
+from .dumps import is_file, download_to, wrap_open, get_filename_path
 import tempfile
 
 
@@ -94,6 +94,8 @@ class WikidataProvider(DataSourceProvider):
             print("Wikidata grammatical categories downloaded; skipping")
             with wrap_open(grammatical_categories_file) as fp:
                 return pd.read_json(fp)
+        
+        grammatical_categories_file = get_filename_path(grammatical_categories_file)
 
         grammatical_categories = self.sparql.run_query("""
         SELECT ?entity ?entityLabel
@@ -105,7 +107,7 @@ class WikidataProvider(DataSourceProvider):
         """)
         
         grammatical_categories = grammatical_categories[~grammatical_categories["entityLabel.xml:lang"].isna()][["entity.value", "entityLabel.value"]]
-        grammatical_categories.to_json(grammatical_categories)
+        grammatical_categories.to_json(grammatical_categories_file)
         return grammatical_categories
     
     def dump_pos_categories(self) -> pd.DataFrame:
@@ -119,6 +121,8 @@ class WikidataProvider(DataSourceProvider):
             with wrap_open(pos_categories_file) as fp:
                 return pd.read_json(fp)
         
+        pos_categories_file = get_filename_path(pos_categories_file)
+        
         pos_categories = self.sparql.run_query("""
         SELECT ?entity ?entityLabel
         WHERE
@@ -129,7 +133,7 @@ class WikidataProvider(DataSourceProvider):
         """)
 
         pos_categories = pos_categories[~pos_categories["entityLabel.xml:lang"].isna()][["entity.value", "entityLabel.value"]]
-        pos_categories.to_json(pos_categories)
+        pos_categories.to_json(pos_categories_file)
         return pos_categories
 
     
@@ -222,8 +226,9 @@ class WiktionaryProvider(DataSourceProvider):
         - `variant`: by default dump the article dataset.
         
         """
-        basefile = f"wiktionary/enwiktionary-{revision}-pages-{variant}.xml.{format}"
-        url = f"https://dumps.wikimedia.org/enwiktionary/{revision}/{basefile}"
+        dump_name = f"enwiktionary-{revision}-pages-{variant}.xml.{format}"
+        basefile = f"wiktionary/{dump_name}"
+        url = f"https://dumps.wikimedia.org/enwiktionary/{revision}/{dump_name}"
         download_to(url, basefile)
 
 class FusekiProvider(DataSourceProvider):
