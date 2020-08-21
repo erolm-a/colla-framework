@@ -21,7 +21,8 @@ USER root
 
 COPY . /root/colla-framework
 
-RUN apt-get update && apt-get install -y gpg
+# Install gpg and openjdk-11-jdk. We need it for sbt and pyjnius, respectively.
+RUN apt-get update && apt-get install -y gpg && apt-get install openjdk-11-jdk
 
 # Re-install Git LFS
 RUN curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | bash
@@ -29,7 +30,6 @@ RUN apt-get install git-lfs
 RUN git lfs install
 
 # Install SBT
-
 RUN echo "deb https://dl.bintray.com/sbt/debian /" | tee -a /etc/apt/sources.list.d/sbt.list
 RUN curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | apt-key add
 RUN apt-get update && apt-get install -y sbt
