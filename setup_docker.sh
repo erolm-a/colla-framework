@@ -15,8 +15,11 @@ python3 -m spylon_kernel install
 cd notebooks
 gcc -o /usr/bin/buffer tools/buffer.c -O2 -Wall --std=c11
 
+# Install our wiktextract and its libraries
+cd 3rdparty/wiktextract && pip3 install -r requirements.txt && python setup.py install
+cd ../../
+
+# Install BabelNet API
 # This only downloads the jars, not the BabelNet index.
 # Refer to README.md for instructions on how to do this.
 ./setup_babelnet.sh
-
-

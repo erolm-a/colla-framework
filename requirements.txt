@@ -1,10 +1,7 @@
 numpy==1.18.5
 pandas==1.0.4
-py4j==0.10.7
-pyspark==2.4.5
 python-dateutil==2.8.1
 pytz==2020.1
-six==1.15.0
 SPARQLWrapper==1.8.5
 spacy==2.3.0
 sentence-transformers==0.2.6.2
@@ -24,4 +21,3 @@ sklearn==0.0
 rdflib-jsonld==0.5.0
 pyserini==0.9.4.0
 seaborn==0.10.1
-cbor==1.0.0

@@ -1,0 +1,513 @@
+{
+    "sessions": [
+        {
+            "title": "Define only",
+            "turns": [
+                {
+                    "utterance": "define 'pi'",
+                    "target": {
+                        "intent": "define",
+                        "np": "pi"
+                    }
+                },
+                {
+                    "utterance": "what is an 'apple'",
+                    "target": {
+                        "intent": "define",
+                        "np": "apple"
+                    }
+                },
+                {
+                    "utterance": "what is the definition of botanics",
+                    "target": {
+                        "intent": "define",
+                        "np": "botanics"
+                    }
+                },
+                {
+                    "utterance": "what does mechanophilia mean",
+                    "target": {
+                        "intent": "define",
+                        "np": "mechanophilia"
+                    }
+                },
+                {
+                    "utterance": "show me all meanings for 'desire'",
+                    "target": {
+                        "intent": "define",
+                        "np": "desire",
+                        "quantifier": "all"
+                    }
+                },
+                {
+                    "utterance": "what is apollo",
+                    "target": {
+                        "intent": "define",
+                        "np": "apollo"
+                    }
+                },
+                {
+                    "utterance": "who is apollo",
+                    "target": {
+                        "intent": "define",
+                        "np": "apollo",
+                        "isPerson": true
+                    }
+                },
+                {
+                    "utterance": "show me all examples for stashes",
+                    "target": {
+                        "intent": "define",
+                        "np": "stashes",
+                        "all": true,
+                        "variant": "example"
+                    }
+                }
+            ]
+        },
+        {
+            "title": "Filter intent only",
+            "turns": [
+                {
+                    "utterance": "tell me the first one",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "number",
+                        "value": 1
+                    }
+                },
+                {
+                    "utterance": "tell me the mathematical one only",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "semantic",
+                        "value": "mathematical"
+                    }
+                },
+                {
+                    "utterance": "what about the first one",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "number",
+                        "value": 1
+                    }
+                },
+                {
+                    "utterance": "show me more examples for the first one",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "number",
+                        "value": 1,
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "show me examples as a noun",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "requiredPos": "noun",
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "show me more examples of home as a verb",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "requiredPos": "verb",
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "what does it mean in the field of computer science",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "semantic",
+                        "category": "computer science"
+                    }
+                },
+                {
+                    "utterance": "in the field of biology, what is the definition",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "semantic",
+                        "category": "biology"
+                    }
+                },
+                {
+                    "utterance": "tell me the singular form",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "grammaticalFeature": "singular"
+                    }
+                },
+                {
+                    "utterance": "what are the available categories",
+                    "target": {
+                        "intent": "filter",
+                        "variant": "categories"
+                    }
+                },
+                {
+                    "utterance": "possible usages",
+                    "target": {
+                        "intent": "filter",
+                        "variant": "usages"
+                    }
+                }
+            ]
+        },
+        {
+            "title": "run",
+            "turns": [
+                {
+                    "utterance": "define home",
+                    "target": {
+                        "intent": "define",
+                        "np": "home"
+                    }
+                }
+            ]
+        },
+        {
+            "title": "Home",
+            "turns": [
+                {
+                    "utterance": "Define home",
+                    "target": {
+                        "intent": "define",
+                        "np": "home"
+                    }
+                },
+                {
+                    "utterance": "Compare with house",
+                    "target": {
+                        "intent": "compare",
+                        "comparisonTerm": "house"
+                    }
+                },
+                {
+                    "utterance": "Show me examples of home as verb",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "requiredPos": "verb",
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "What are stilish synonyms?",
+                    "target": {
+                        "intent": "related",
+                        "filtertype": "synonym",
+                        "category": "stylish",
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "What are derived words?",
+                    "target": {
+                        "intent": "related",
+                        "filtertype": "derived",
+                        "category": "formal|researched|stylish",
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "In the field of biology, does it have special meanings?",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "semantic",
+                        "category": "biology"
+                    }
+                }
+            ]
+        },
+        {
+            "title": "run",
+            "turns": [
+                {
+                    "utterance": "Tell me about run",
+                    "target": {
+                        "intent": "define",
+                        "np": "run"
+                    }
+                },
+                {
+                    "utterance": "Show me usages of the past simple tense",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "grammaticalForm": "past simple tense",
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "Show me phrasal verbs built with it, along with examples",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "semantic",
+                        "grammaticalForm": "phrasal verb",
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "Which parts of speech are available for it?",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "variant": "pos"
+                    }
+                },
+                {
+                    "utterance": "What are its grammatical quirks?",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "grammaticalFeature": "irregular"
+                    }
+                },
+                {
+                    "utterance": "In Computer Science, what does one run?",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "semantic",
+                        "category": "computer science"
+                    }
+                }
+            ]
+        },
+        {
+            "title": "apollo",
+            "turns": [
+                {
+                    "utterance": "Who is Apollo?",
+                    "target": {
+                        "intent": "define",
+                        "np": "Apollo",
+                        "isPerson": true
+                    }
+                },
+                {
+                    "utterance": "What is Apollo?",
+                    "target": {
+                        "intent": "define",
+                        "np": "Apollo"
+                    }
+                },
+                {
+                    "utterance": "Can it be used as an adjective?",
+                    "target": {
+                        "intent": "decide",
+                        "filtertype": "semantic",
+                        "requiredPos": "adjective"
+                    }
+                },
+                {
+                    "utterance": "Which language does it come from?",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "etymology"
+                    }
+                },
+                {
+                    "utterance": "Is Apollo an animal?",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "semantic",
+                        "category": "animal"
+                    }
+                }
+            ]
+        },
+        {
+            "title": "tall",
+            "turns": [
+                {
+                    "utterance": "what does tall mean?",
+                    "target": {
+                        "intent": "define",
+                        "np": "tall"
+                    }
+                },
+                {
+                    "utterance": "comparative and superlative",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "grammaticalFeature": "comparative|superlative"
+                    }
+                },
+                {
+                    "utterance": "Is it regular?",
+                    "target": {
+                        "intent": "decide",
+                        "filtertype": "grammatical",
+                        "grammaticalFeature": "regular"
+                    }
+                },
+                {
+                    "utterance": "Provide some examples",
+                    "target": {
+                        "intent": "filter",
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "What are the antonyms?",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "antonym"
+                    }
+                },
+                {
+                    "utterance": "Tell me a sophisticated synonym",
+                    "target": {
+                        "intent": "related",
+                        "filtertype": "synonym",
+                        "category": "sophisticated"
+                    }
+                }
+            ]
+        },
+        {
+            "title": "family",
+            "turns": [
+                {
+                    "utterance": "What is a family?",
+                    "target": {
+                        "intent": "define",
+                        "np": "family"
+                    }
+                },
+                {
+                    "utterance": "Tell me more about the dynasty version",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "semantic",
+                        "value": "dinasty"
+                    }
+                },
+                {
+                    "utterance": "What is the plural of family?",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "grammaticalFeature": "plural"
+                    }
+                },
+                {
+                    "utterance": "tell me about the mathematics sense",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "semantic",
+                        "value": "mathematics"
+                    }
+                },
+                {
+                    "utterance": "is family a synonym for collection?",
+                    "target": {
+                        "intent": "decide",
+                        "filtertype": "synonym",
+                        "relatedTerm": "collection"
+                    }
+                }
+            ]
+        },
+        {
+            "title": "Grammatics",
+            "turns": [
+                {
+                    "utterance": "What is a comparative?",
+                    "target": {
+                        "intent": "define",
+                        "np": "comparative"
+                    }
+                },
+                {
+                    "utterance": "What is the comparative form of 'terrestrial'?",
+                    "target": {
+                        "intent": "filter",
+                        "np": "terrestrial",
+                        "filtertype": "grammatical",
+                        "grammaticalFeature": "comparative"
+                    }
+                },
+                {
+                    "utterance": "What is the difference between the comparative and superlative?",
+                    "target": {
+                        "intent": "compare",
+                        "comparisonTerm": "comparative",
+                        "comparisonTerm2": "superlative"
+                    }
+                },
+                {
+                    "utterance": "Can adverbs have a comparative form?",
+                    "target": {
+                        "intent": "decide",
+                        "requiredPos": "adverb",
+                        "grammaticalFeature": "comparative"
+                    }
+                },
+                {
+                    "utterance": "Show me an irregular adverb",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "requiredPos": "adverb",
+                        "grammaticalFeature": "irregular"
+                    }
+                },
+                {
+                    "utterance": "Do nouns have comparatives?",
+                    "target": {
+                        "intent": "decide",
+                        "requiredPos": "noun",
+                        "grammaticalFeature": "comparative"
+                    }
+                }
+            ]
+        },
+        {
+            "title": "Grammatics #2",
+            "turns": [
+                {
+                    "utterance": "What are the parts of speech available in English?",
+                    "target": {
+                        "intent": "filter",
+                        "filtertype": "grammatical",
+                        "variant": "pos"
+                    }
+                },
+                {
+                    "utterance": "What is a preposition?",
+                    "target": {
+                        "intent": "define",
+                        "np": "preposition"
+                    }
+                },
+                {
+                    "utterance": "Show me a phrasal verb",
+                    "target": {
+                        "intent": "define",
+                        "np": "phrasal verb"
+                    }
+                },
+                {
+                    "utterance": "Give me an example with 'break'",
+                    "target": {
+                        "intent": "define",
+                        "np": "break",
+                        "variant": "example"
+                    }
+                },
+                {
+                    "utterance": "Should phrasal verbs be used when writing formally?",
+                    "target": {}
+                }
+            ]
+        }
+    ]
+}
