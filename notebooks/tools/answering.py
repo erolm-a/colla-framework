@@ -268,7 +268,7 @@ def match_intent_question(question: str) -> Intent:
     if not 'intent' in best_semantics:
         return
 
-    if best_semantics['intent'] == 'definition':
+    if best_semantics['intent'] == 'define':
         return DefinitionIntent(best_semantics['np'])
     elif best_semantics['intent'] == 'filter':
         return FilterIntent(best_semantics)
