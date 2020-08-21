@@ -180,7 +180,7 @@ class ExtractorGraph:
         
         other_pos = {"conjunction", "preposition", "postposition", "proverb",
                           "prefix", "affix", "letter", "punctuation", "interjection",
-                          "propername"}
+                          "propername", 'phrase'}
         
         self.all_pos = other_pos.union(lexinfo_pos)
 
@@ -290,10 +290,10 @@ class ExtractorGraph:
                         if example:
                             g.add((sense_id, example_link, Literal(example, lang="en")))
 
-            if 'subsenses' in sense and sense['subsenses'] is not None:
-                self.add_sense_rec(sense['subsenses'], word_id, lexeme_id, depth+1, sense_id)
-            if 'usages' in sense and sense['usages'] is not None:
-                self.add_sense_rec(sense['usages'], word_id, lexeme_id, depth+1, sense_id)
+                if 'subsenses' in sense and sense['subsenses'] is not None:
+                    self.add_sense_rec(sense['subsenses'], word_id, lexeme_id, depth+1, sense_id)
+                if 'usages' in sense and sense['usages'] is not None:
+                    self.add_sense_rec(sense['usages'], word_id, lexeme_id, depth+1, sense_id)
 
     def add_grammatical_categories(self, word_id, cats):
         """

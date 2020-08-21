@@ -21,11 +21,14 @@ def main():
         choices=["wdtv", "wdpg"])
     parser.add_argument("-o", "--output", help="The output file to generate a dump to. The format is Turtle",
         type=str, required=True)
+    parser.add_argument("-s", "--skip-wiktionary", help="Skip wiktionary dumping (for debug purposes, may cause unreproducible results!)",
+        action="store_true")
 
     
     args = parser.parse_args()
     revision = args.wiktionary_revision
     wordlist_arg = args.wordlist
+
     if wordlist_arg == "wdpg":
         wordlist = WiktionaryProjectGutenberg.get_wordlist()
     elif wordlist_arg == "wdtv":
@@ -35,13 +38,15 @@ def main():
     
     output = get_filename_path(args.output)
 
-    print(f"Beginning to dump the Wiktionary revision {revision}")
-    WiktionaryProvider.dump_full_dataset(revision=revision)
-    
-    print(f"Beginning Wiktionary parsing. This will take a while")
-    wiktionary_output_file = get_filename_path(f"wiktionary/enwiktionary-{revision}-pages-articles.xml.bz2")
     wiktextract_output_file = get_filename_path(f"wiktionary/{revision}-English.json")
-    subprocess.run(["wiktwords", wiktionary_output_file, "--out", wiktextract_output_file, "--language", "English", "--all"])
+
+    if not args.skip_wiktionary:
+        print(f"Beginning to dump the Wiktionary revision {revision}")
+        WiktionaryProvider.dump_full_dataset(revision=revision)
+        
+        print(f"Beginning Wiktionary parsing. This will take a while")
+        wiktionary_output_file = get_filename_path(f"wiktionary/enwiktionary-{revision}-pages-articles.xml.bz2")
+        subprocess.run(["wiktwords", wiktionary_output_file, "--out", wiktextract_output_file, "--language", "English", "--all"])
 
     print("Beginning wiktionary extraction and entity linking")
 
@@ -51,7 +56,7 @@ def main():
     wiktionary_df = spark.read.json(wiktextract_output_file)
     # Filter by the given wordlist, if given
     if wordlist:
-        wordlist_df = spark.createDataFrame(pd.DataFrame({'word': wordlist})).collect()
+        wordlist_df = spark.createDataFrame(pd.DataFrame({'word': wordlist}))
         cursor = wiktionary_df.join(wordlist_df, "word", "inner")
     
     else:
