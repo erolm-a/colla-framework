@@ -28,7 +28,7 @@ You also need to download the BabelNet indices, which unfortunately cannot be au
 - Register to [BabelNet](https://babelnet.org/login)
 - Apply for the > 29 GB  indices dataset.
 - Download it and extract it under your `$COLLA_BABELNET_INDEX`. This location should now have about 44 folders (each being a Lucene index) and 4 files.
-
+- If you are inside the pod, from inside `notebooks` invoke `setup_babelnet_index.py` which will update your BabelNet config. Otherwise, manually write "babelnet.dir=your_index_absolute_path" into ``config/babelnet.var.properties`` and comment out the rest. For more information refer to the API [readme](https://github.com/marcevrard/BabelNet-API#2-babelnet-index).
 
 ## Jupyter Development/Testing Pod
 
