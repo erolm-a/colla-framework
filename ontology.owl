@@ -1,0 +1,436 @@
+<?xml version="1.0"?>
+<rdf:RDF xmlns="urn:absolute:grill-lab.org/kg/"
+     xml:base="urn:absolute:grill-lab.org/kg/"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xml="http://www.w3.org/XML/1998/namespace"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <owl:Ontology rdf:about="urn:absolute:grill-lab.org/kg/">
+        <owl:versionIRI rdf:resource="urn:absolute:grill-lab.org/kg/20200821"/>
+        <rdfs:comment>ColLa Linguistic Knowledge Graph RDF description.</rdfs:comment>
+    </owl:Ontology>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Object Properties
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://grill-lab.org/kg/property/antonym -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/antonym">
+        <rdfs:subPropertyOf rdf:resource="http://grill-lab.org/kg/property/semanticPointer"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/derivationally_related_form -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/derivationally_related_form">
+        <rdfs:subPropertyOf rdf:resource="http://grill-lab.org/kg/property/semanticPointer"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/grammaticalCategory -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/grammaticalCategory"/>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/hypernym -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/hypernym">
+        <rdfs:subPropertyOf rdf:resource="http://grill-lab.org/kg/property/semanticPointer"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/hyponym -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/hyponym">
+        <rdfs:subPropertyOf rdf:resource="http://grill-lab.org/kg/property/semanticPointer"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/semanticPointer -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/semanticPointer">
+        <rdfs:domain>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://grill-lab.org/kg/property/synset"/>
+                <owl:someValuesFrom rdf:resource="http://grill-lab.org/kg/entity/Synset"/>
+            </owl:Restriction>
+        </rdfs:domain>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/semantically_related_form -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/semantically_related_form">
+        <rdfs:subPropertyOf rdf:resource="http://grill-lab.org/kg/property/semanticPointer"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/similar_to -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/similar_to">
+        <rdfs:subPropertyOf rdf:resource="http://grill-lab.org/kg/property/semanticPointer"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/synset -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/synset"/>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/verb_group -->
+
+    <owl:ObjectProperty rdf:about="http://grill-lab.org/kg/property/verb_group">
+        <rdfs:subPropertyOf rdf:resource="http://grill-lab.org/kg/property/semanticPointer"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/form -->
+
+    <owl:ObjectProperty rdf:about="urn:absolute:grill-lab.org/kg/form">
+        <rdfs:subPropertyOf rdf:resource="http://www.w3.org/2002/07/owl#topObjectProperty"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/language -->
+
+    <owl:ObjectProperty rdf:about="urn:absolute:grill-lab.org/kg/language">
+        <rdfs:subPropertyOf rdf:resource="http://www.w3.org/2002/07/owl#topObjectProperty"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/pos -->
+
+    <owl:ObjectProperty rdf:about="urn:absolute:grill-lab.org/kg/pos"/>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/property/sense -->
+
+    <owl:ObjectProperty rdf:about="urn:absolute:grill-lab.org/kg/property/sense"/>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Data properties
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://grill-lab.org/kg/property/definition -->
+
+    <owl:DatatypeProperty rdf:about="http://grill-lab.org/kg/property/definition">
+        <rdfs:range rdf:resource="http://www.w3.org/2000/01/rdf-schema#Literal"/>
+    </owl:DatatypeProperty>
+    
+
+
+    <!-- http://grill-lab.org/kg/property/label -->
+
+    <owl:DatatypeProperty rdf:about="http://grill-lab.org/kg/property/label">
+        <rdfs:range rdf:resource="http://www.w3.org/2000/01/rdf-schema#Literal"/>
+    </owl:DatatypeProperty>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Classes
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://grill-lab.org/kg/entity/Synset -->
+
+    <owl:Class rdf:about="http://grill-lab.org/kg/entity/Synset">
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://grill-lab.org/kg/property/semanticPointer"/>
+                <owl:someValuesFrom rdf:resource="http://grill-lab.org/kg/entity/Synset"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+    </owl:Class>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/entity/Form -->
+
+    <owl:Class rdf:about="urn:absolute:grill-lab.org/kg/entity/Form">
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://grill-lab.org/kg/property/grammaticalCategory"/>
+                <owl:someValuesFrom rdf:resource="urn:absolute:grill-lab.org/kg/entity/GrammaticalCategory"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+    </owl:Class>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/entity/GrammaticalCategory -->
+
+    <owl:Class rdf:about="urn:absolute:grill-lab.org/kg/entity/GrammaticalCategory"/>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/entity/Language -->
+
+    <owl:Class rdf:about="urn:absolute:grill-lab.org/kg/entity/Language"/>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/entity/Lexeme -->
+
+    <owl:Class rdf:about="urn:absolute:grill-lab.org/kg/entity/Lexeme">
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="urn:absolute:grill-lab.org/kg/form"/>
+                <owl:someValuesFrom rdf:resource="urn:absolute:grill-lab.org/kg/entity/Form"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="urn:absolute:grill-lab.org/kg/language"/>
+                <owl:someValuesFrom rdf:resource="urn:absolute:grill-lab.org/kg/entity/Language"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="urn:absolute:grill-lab.org/kg/pos"/>
+                <owl:qualifiedCardinality rdf:datatype="http://www.w3.org/2001/XMLSchema#nonNegativeInteger">1</owl:qualifiedCardinality>
+                <owl:onClass rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+    </owl:Class>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/entity/POS -->
+
+    <owl:Class rdf:about="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/entity/Sense -->
+
+    <owl:Class rdf:about="urn:absolute:grill-lab.org/kg/entity/Sense">
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://grill-lab.org/kg/property/synset"/>
+                <owl:someValuesFrom rdf:resource="http://grill-lab.org/kg/entity/Synset"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://grill-lab.org/kg/property/definition"/>
+                <owl:someValuesFrom rdf:resource="http://www.w3.org/2000/01/rdf-schema#Literal"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+    </owl:Class>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/entity/Subsense -->
+
+    <owl:Class rdf:about="urn:absolute:grill-lab.org/kg/entity/Subsense">
+        <rdfs:subClassOf rdf:resource="urn:absolute:grill-lab.org/kg/entity/Sense"/>
+    </owl:Class>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/entity/Usage -->
+
+    <owl:Class rdf:about="urn:absolute:grill-lab.org/kg/entity/Usage">
+        <rdfs:subClassOf rdf:resource="urn:absolute:grill-lab.org/kg/entity/Subsense"/>
+    </owl:Class>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Individuals
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/adjective -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/adjective">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/adverb -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/adverb">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/article -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/article">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/determiner -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/determiner">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/interjection -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/interjection">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/letter -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/letter">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/noun -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/noun">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/particle -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/particle">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/phrase -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/phrase">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/postposition -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/postposition">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/prefix -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/prefix">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/preposition -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/preposition">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/pronoun -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/pronoun">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/propername -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/propername">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/punctuation -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/punctuation">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/suffix -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/suffix">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/symbol -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/symbol">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- urn:absolute:grill-lab.org/kg/verb -->
+
+    <owl:NamedIndividual rdf:about="urn:absolute:grill-lab.org/kg/verb">
+        <rdf:type rdf:resource="urn:absolute:grill-lab.org/kg/entity/POS"/>
+    </owl:NamedIndividual>
+</rdf:RDF>
+
+
+
+<!-- Generated by the OWL API (version 4.5.9.2019-02-01T07:24:44Z) https://github.com/owlcs/owlapi -->
+

@@ -109,6 +109,10 @@ Unfortunately, we still do not have an automatized way to start Fuseki with a RD
 
 The docker image [erolmatei/colla-framework-flask](https://hub.docker.com/repository/docker/erolmatei/colla-framework-flask) takes care of building up the JS blob. What you need to do is simply to create a Pod for a SPARQL provider (we'll use Fuseki as it is pretty out-of-the-box), upload a graph and then start our Flask image.
 
+## Documentation
+
+By and large the project is fairly documented. The RDF ontology is described in "ontology.owl". Please use tools like [Webvovl](http://www.visualdataweb.de/webvowl/) to visualize them or [Protegé](https://protege.stanford.edu) to modify them.
+
 ## Future Work
 
 See [here](futurework.md) for details.
