@@ -457,4 +457,19 @@ class WiktionaryProjectGutenberg(Wordlist):
     def get_wordlist():
         return scrape_wiktionary_wordlists("https://en.wiktionary.org/wiki/Wiktionary:Frequency_lists/PG/2006/04/1-10000", "wdpg.txt")
 
+class WikipediaProvider(DataSourceProvider):
+    @staticmethod
+    def dump_full_dataset(format="bz2", revision="latest", variant="articles-multistream"):
+        """Download a Wikipedia dump.
 
+        params:
+        - `revision`: a date represented as a `str` in the format YYYYMMDD.
+        - `format`: a compression format; the user is expected to know in advance which format is needed.
+        - `variant`: by default dump the article dataset.
+        
+        """
+        dump_name = f"enwiki-{revision}-pages-{variant}.xml.{format}"
+        basefile = f"wikipedia/{dump_name}"
+        url = f"https://dumps.wikimedia.org/enwiki/{revision}/{dump_name}"
+        download_to(url, basefile)
+        

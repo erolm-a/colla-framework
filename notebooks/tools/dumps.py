@@ -8,7 +8,7 @@ to manually create subfolders or making unrequired pollution.
 import os
 import requests
 import wget
-
+from tqdm import tqdm
 from .strings import strip_prefix
 
 DATA_FOLDER = os.environ.get("COLLA_DATA_FOLDER", os.path.join(os.getcwd(), "data"))
@@ -33,7 +33,8 @@ def wrap_open(filename, *args, **kwargs):
     """
     path = get_filename_path(filename)
 
-    if "handler" in args:
+    if "handler" in kwargs:
+        print("Found custom handler ", kwargs["handler"])
         handler = kwargs["handler"]
         del kwargs["handler"]
     else:
@@ -54,8 +55,25 @@ def download_to(url: str, filename: str):
     # touch and create the directories
     path = get_filename_path(filename)
     # print(url)
-    wget.download(url, path, bar=wget.bar_thermometer)
+    # wget.download(url, path, bar=wget.bar_thermometer)
 
+    # https://stackoverflow.com/a/37573701 , but uses a better block size
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+
+    total_size_in_bytes = int(response.headers.get('content-length', 0))
+    block_size = 512 * 1024 # 512 kibibyte
+    progress_bar = tqdm(total=total_size_in_bytes, unit='iB', unit_scale=True)
+    print(url)
+    
+    with open(path, 'wb') as file:
+        for data in response.iter_content(block_size):
+            progress_bar.update(len(data))
+            file.write(data)
+    
+    progress_bar.close()
+    if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
+        print(f"Error while downloading the requested file: {path}")
 
 def make_lucene_index(lucene_document_collection: str, lucene_index_path: str,
         format: str = "JavaCollection"):
