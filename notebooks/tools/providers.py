@@ -1,12 +1,14 @@
 from abc import ABC, abstractmethod
+from os.path import join
+
+
 from bs4 import BeautifulSoup
 import json
-from os.path import join
 import pandas as pd
+import requests
 
 from .sparql_wrapper import WikidataQuery, FusekiQuery
 from .dumps import is_file, download_to, wrap_open, get_filename_path
-import tempfile
 
 
 class DataSourceProvider(ABC):
@@ -459,17 +461,36 @@ class WiktionaryProjectGutenberg(Wordlist):
 
 class WikipediaProvider(DataSourceProvider):
     @staticmethod
-    def dump_full_dataset(format="bz2", revision="latest", variant="articles-multistream"):
+    def dump_full_dataset(format="bz2", revision="latest",
+                          variant="articles-multistream", partitioned=True):
         """Download a Wikipedia dump.
 
         params:
         - `revision`: a date represented as a `str` in the format YYYYMMDD.
         - `format`: a compression format; the user is expected to know in advance which format is needed.
-        - `variant`: by default dump the article dataset.
+        - `variant`: by default dump the article dataset. This value is ignored if partitioned is True.
+        - `partitioned`: if True (default) try to download the dump partitioned.
+                         Normally advised for parallel processing of different partitions
+                         in a Python multiprocessing `Pool`. Partitions are downloaded sequentially.
+                         I could download them in parallel but Wikimedia may not be happy about this.
         
         """
-        dump_name = f"enwiki-{revision}-pages-{variant}.xml.{format}"
-        basefile = f"wikipedia/{dump_name}"
-        url = f"https://dumps.wikimedia.org/enwiki/{revision}/{dump_name}"
-        download_to(url, basefile)
+        wikimedia_url_base = "https://dumps.wikimedia.org"
+        if partitioned:
+            # Get a list of partition names to use
+            partition_file = requests.get(f"{wikimedia_url_base}/enwiki/20201101/dumpstatus.json")
+            partition_loaded = json.loads(partition_file.content.decode())
+            files_uri = partition_loaded["jobs"]["articlesmultistreamdump"]["files"]
+
+            for basename, url in files_uri.items():
+                basefile = f"wikipedia/{basename}"
+                url = wikimedia_url_base + url['url']
+
+                print(f"Downloading partition {basefile}")
+                download_to(url, basefile)
+        else:
+            dump_name = f"enwiki-{revision}-pages-{variant}.xml.{format}"
+            basefile = f"wikipedia/{dump_name}"
+            url = f"https://dumps.wikimedia.org/enwiki/{revision}/{dump_name}"
+            download_to(url, basefile)
         

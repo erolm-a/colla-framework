@@ -49,22 +49,19 @@ def is_file(filename) -> bool:
 
 def download_to(url: str, filename: str):
     """
-    Wrapper to wget that prefixes the destination file and possibly creates
-    all the required subfolders
+    Download a resource in a destination file and possibly creates
+    all the required subfolders. Uses tqdm
     """
     # touch and create the directories
     path = get_filename_path(filename)
-    # print(url)
-    # wget.download(url, path, bar=wget.bar_thermometer)
 
-    # https://stackoverflow.com/a/37573701 , but uses a better block size
+    # https://stackoverflow.com/a/37573701 , but with a better block size
     response = requests.get(url, stream=True)
     response.raise_for_status()
 
     total_size_in_bytes = int(response.headers.get('content-length', 0))
-    block_size = 512 * 1024 # 512 kibibyte
+    block_size = 1024 * 1024 # 1 mebibyte
     progress_bar = tqdm(total=total_size_in_bytes, unit='iB', unit_scale=True)
-    print(url)
     
     with open(path, 'wb') as file:
         for data in response.iter_content(block_size):
@@ -74,13 +71,3 @@ def download_to(url: str, filename: str):
     progress_bar.close()
     if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
         print(f"Error while downloading the requested file: {path}")
-
-def make_lucene_index(lucene_document_collection: str, lucene_index_path: str,
-        format: str = "JavaCollection"):
-    """
-    Create a lucene document from a given collection.
-
-    This method wraps an anserini call, but also makes sure 
-    """
-
-    pass
