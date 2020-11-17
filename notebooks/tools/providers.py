@@ -494,3 +494,8 @@ class WikipediaProvider(DataSourceProvider):
             url = f"https://dumps.wikimedia.org/enwiki/{revision}/{dump_name}"
             download_to(url, basefile)
         
+
+class TrecCarProvider(DataSourceProvider):
+    def dump_full_dataset(format="tar.xz", revision="2020-01-01"):
+        raise Exception("Not yet implemented")
+
