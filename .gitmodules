@@ -5,3 +5,6 @@
 	path = notebooks/3rdparty/wiktextract
 	url = https://github.com/erolm-a/wiktextract.git
 	branch = feature/hierarchical_glosses
+[submodule "notebooks/3rdparty/trec-car-tools"]
+	path = notebooks/3rdparty/trec-car-tools
+	url = https://github.com/TREMA-UNH/trec-car-tools
