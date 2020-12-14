@@ -273,7 +273,7 @@ class WikipediaCBOR(Dataset):
         return torch.sparse_coo_tensor(keys, values,
                                              size=(1, len(self)))
 
-    def __extract_links(self, num_partitions=None, partition_page_lim=10000, pages_per_worker=1000):
+    def __extract_links(self, num_partitions=None, partition_page_lim=100, pages_per_worker=1000):
         """
         Create some page batches and count mention occurrences for each batch.
         Summate results.
@@ -305,15 +305,15 @@ class WikipediaCBOR(Dataset):
             
             for partition_id in tqdm.trange(num_partitions, desc="Submitting partitions"):
                 for idx in range(0, _partition_page_lim, pages_per_worker):
-                    chosen_page_offsets = offset_lists[partition_id][idx:idx+pages_per_worker]
+                    chosen_page_offsets = offset_lists[partition_id][idx:min(idx+pages_per_worker, _partition_page_lim)]
 
-                    #promises.append(executor.submit(self.__extract_links_monothreaded,
-                    #                            partition_id,
-                    #                            chosen_page_offsets))
-                    tensors.append(self.__extract_links_monothreaded(partition_id, chosen_page_offsets))
+                    promises.append(executor.submit(self.__extract_links_monothreaded,
+                                                partition_id,
+                                                chosen_page_offsets))
+                    #tensors.append(self.__extract_links_monothreaded(partition_id, chosen_page_offsets))
 
-            #for promise in tqdm.tqdm(futures.as_completed(promises), desc="Merging tokenized text"):
-            #    tensors.append(promise.result())
+            for promise in tqdm.tqdm(futures.as_completed(promises), desc="Merging tokenized text"):
+                tensors.append(promise.result())
         
         return torch.sparse.sum(torch.stack(tensors), [1])
     
