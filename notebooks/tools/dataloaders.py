@@ -3,32 +3,34 @@ Convenience tools for parsing CBOR
 '''
 
 from trec_car import read_data
-from trec_car.read_data import AnnotationsFile, ParagraphsFile, Page
+from trec_car.read_data import (AnnotationsFile, ParagraphsFile, Page,
+                                Section, List, Para, ParaLink, ParaText, ParaBody)
 
 from .dumps import wrap_open, get_filename_path
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import torch
 import cbor
+import numpy as np
 
-from typing import List, Union, Iterable
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import tqdm
 from transformers import BertTokenizer, BertConfig
 from keras.preprocessing.sequence import pad_sequences
 
 import numpy as np
-import random
 
-import subprocess
-import os
-import mmap
 import concurrent.futures as futures
+import itertools
+import mmap
+import os
+import random
+import subprocess
 
+from typing import List, Union, Iterable
 
 tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-base-uncased')    # Download vocabulary from S3 and cache.
 
-from trec_car.read_data import Page, Section, List, Para, ParaLink, ParaText, ParaBody
 
 def handle_section(skel, toks, links, tokenize):
     for subskel in skel.children:
@@ -74,9 +76,6 @@ def visit_section(skel, toks, links, tokenize=True):
     handler[type(skel)](skel, toks, links, tokenize)
 
 
-
-
-
 def partition(toc: str, destination: str, num_partitions=100):
     """
     ...why am I doing this by hand?
@@ -113,28 +112,6 @@ def partition(toc: str, destination: str, num_partitions=100):
             for off in offsets[i:j+1]:
                 output_toc.write(str(off - start_offset) + "\n")
 
-
-# Torch-related stuff
-import torch
-from torch.utils.data import Dataset, DataLoader
-from torch.utils.data import Dataset
-import tqdm
-from transformers import BertTokenizer, BertConfig
-from keras.preprocessing.sequence import pad_sequences
-
-from tools.dumps import get_filename_path
-from trec_car.read_data import AnnotationsFile, ParagraphsFile, Page
-
-from collections import Counter
-import concurrent.futures as futures
-import random
-import itertools
-import sys
-import os
-
-import numpy as np
-
-from typing import List, Union, Iterable
 
 def b2i(x):
     return int.from_bytes(x, "big")
@@ -217,29 +194,29 @@ class WikipediaCBOR(Dataset):
      
 
     def __get_pages (self,
-                     partition_id: int,
+                     partition_mmapped,
                      offset_list: Iterable[int]) -> List[Page]:
         """
         Extract all the Page's from a CBOR partition file.
-        It returns the list of pages in a partition
-        # TODO is this reasonable?
+        It returns the list of pages in a partition.
+        (Generators are not thread-safe).
         
-        :param partition_id the index of the partition
+        :param partition_id the mmapped stream of the partition
         :param offset_list the list of page offsets within the partition
         """
         
         pages = []
-        
-        with open(os.path.join(self.partition_path, f"{partition_id}.cbor"), "rb") as f:
-            for offset in offset_list:
-                f.seek(offset)
-                pages.append(Page.from_cbor(cbor.load(f)))
-                #yield Page.from_cbor(cbor.load(f))
-                
+        for idx in offset_list:
+            loaded_cbor = cbor.loads(partition_mmapped[idx:])
+            pages.append(Page.from_cbor(loaded_cbor))
+
         return pages
+        #return [Page.from_cbor(next(cbor.load(partition_mmapped[idx:])) for idx in offset_list)]
+        #yield from [Page.from_cbor(cbor.loads(partition_mmapped[idx:]) for idx in offset_list)
+
 
     def __extract_links_monothreaded(self,
-                                     partition_id: int,
+                                     partition_mmapped,
                                      offset_list: Iterable[int]) -> torch.sparse.LongTensor:
         """
         Calculate the frequency of each mention in wikipedia.
@@ -251,7 +228,9 @@ class WikipediaCBOR(Dataset):
         
         links = []
         
-        for page in self.__get_pages(partition_id, offset_list):
+        pages = self.__get_pages(partition_mmapped, offset_list)
+        
+        for page in pages:
             # remove spurious None elements
             if page is None:
                 continue
@@ -262,18 +241,20 @@ class WikipediaCBOR(Dataset):
         freqs = Counter(links)
 
         # remove mentions that do not have an associated wikipedia page
+        # TODO: is this still necessary?
         keys = list(freqs.keys())
         for key in keys:
             if key not in self.key_titles:
                 del freqs[key]
+        
 
-        keys = np.array([[0, self.key_encoder.get(k, -1)] for k in freqs.keys()]).T.reshape(2, -1)
+        keys = np.array([[0, self.key_encoder.get(k, 0)] for k in freqs.keys()]).T.reshape(2, -1)
         values = np.fromiter(freqs.values(), dtype=np.int32)
 
         return torch.sparse_coo_tensor(keys, values,
                                              size=(1, len(self)))
 
-    def __extract_links(self, num_partitions=None, partition_page_lim=100, pages_per_worker=1000):
+    def __extract_links(self, num_partitions=None, partition_page_lim=1000, pages_per_worker=100):
         """
         Create some page batches and count mention occurrences for each batch.
         Summate results.
@@ -288,34 +269,55 @@ class WikipediaCBOR(Dataset):
 
        
         offset_lists = []
+        mmapped = []
         for partition_id in tqdm.trange(num_partitions, desc="Reading partition tocs"):
             with open(os.path.join(self.partition_path, f"{partition_id}.cbor.toc")) as f:
                 offset_lists.append([int(line.strip()) for line in f.readlines()])
+
+            with open(os.path.join(self.partition_path, f"{partition_id}.cbor")) as f:
+                mmapped.append(mmap.mmap(f.fileno(), 0, flags=mmap.MAP_PRIVATE))
             
         
         starting_tensor = torch.sparse.LongTensor(1, len(self))
         tensors = []
         with futures.ThreadPoolExecutor() as executor:
             promises = []
+
             
             if partition_page_lim is None:
                 _partition_page_lim = len(offset_lists[partition_id])
             else:
                 _partition_page_lim = partition_page_lim
-            
-            for partition_id in tqdm.trange(num_partitions, desc="Submitting partitions"):
+
+            # We create a number of workers and round-robin on each partition.
+            # list transpose does the trick
+            args_list = []
+            for partition_id in range(num_partitions):
+                args_list.append([])
                 for idx in range(0, _partition_page_lim, pages_per_worker):
                     chosen_page_offsets = offset_lists[partition_id][idx:min(idx+pages_per_worker, _partition_page_lim)]
-
-                    promises.append(executor.submit(self.__extract_links_monothreaded,
-                                                partition_id,
+                    args_list[-1].append((self.__extract_links_monothreaded,
+                                                mmapped[partition_id],
                                                 chosen_page_offsets))
                     #tensors.append(self.__extract_links_monothreaded(partition_id, chosen_page_offsets))
+
+            # https://stackoverflow.com/a/6473724
+            args_list = map(list, zip(*args_list))
+
+            # Flatten the list, and actually send the work
+            for args in tqdm.tqdm(list(itertools.chain(*args_list)), desc="Scheduling work batches..."):
+                promises.append(executor.submit(*args))
 
             for promise in tqdm.tqdm(futures.as_completed(promises), desc="Merging tokenized text"):
                 tensors.append(promise.result())
         
-        return torch.sparse.sum(torch.stack(tensors), [1])
+        # cleanup before merging
+        for mmapped_ in mmapped:
+            mmapped_.close()
+
+        # Stack the tensors, get rid of the dummy singleton (0) and sum column-wise (1)
+        # Squeezes are not possible as sparse tensors have no strides
+        return torch.sparse.sum(torch.stack(tensors), [0, 1]).to_dense()
     
     
     def __len__(self):
