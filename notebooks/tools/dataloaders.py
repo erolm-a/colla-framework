@@ -1,10 +1,12 @@
 '''
-Convenience tools for parsing CBOR
+Convenience tools for parsing CBOR and BIO stuff
+
+TODO: add BIO code from the notebook
 '''
 
 from trec_car import read_data
-from trec_car.read_data import (AnnotationsFile, ParagraphsFile, Page,
-                                Section, List, Para, ParaLink, ParaText, ParaBody)
+from trec_car.read_data import (AnnotationsFile, ParagraphsFile, Page, Para,
+                                Section, List as ParaList, ParaLink, ParaText, ParaBody)
 
 from .dumps import wrap_open, get_filename_path
 from collections import Counter, defaultdict
@@ -13,12 +15,13 @@ import torch
 import cbor
 import numpy as np
 
+import pickle
+
 from torch.utils.data import Dataset, DataLoader
 import tqdm
 from transformers import BertTokenizer, BertConfig
 from keras.preprocessing.sequence import pad_sequences
 
-import numpy as np
 
 import concurrent.futures as futures
 import itertools
@@ -31,49 +34,6 @@ from typing import List, Union, Iterable
 
 tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-base-uncased')    # Download vocabulary from S3 and cache.
 
-
-def handle_section(skel, toks, links, tokenize):
-    for subskel in skel.children:
-        visit_section(subskel, toks, links, tokenize)
-
-def handle_list(skel, toks, links, tokenize):
-    visit_section(skel.body, toks, links, tokenize)
-
-def handle_para(skel: Para, toks, links, tokenize):
-    paragraph = skel.paragraph
-    bodies = paragraph.bodies
-
-    for body in bodies:
-        visit_section(body, toks, links, tokenize)
-
-def handle_paratext(body: ParaBody, toks, links, tokenize):
-    if tokenize:
-        lemmas = tokenizer.tokenize(body.get_text())
-        toks.extend(lemmas)
-        links.extend(["PAD"] * len(lemmas))
-
-def handle_paralink(body: ParaLink, toks, links, tokenize):
-    lemmas = tokenizer.tokenize(body.get_text())
-    if tokenize:
-        toks.extend(lemmas)
-        links.extend([body.page] + ["PAD"] * (len(lemmas) - 1))
-    else:
-        links.append(body.page)
-    pass
-
-def nothing():
-    return lambda body, toks, links, tokenize: None
-
-handler = defaultdict(nothing, {Section: handle_section,
-                     Para: handle_para,
-                     List: handle_list,
-                     ParaLink: handle_paralink,
-                     ParaText: handle_paratext})
-
-
-def visit_section(skel, toks, links, tokenize=True):
-    # Recur on the sections
-    handler[type(skel)](skel, toks, links, tokenize)
 
 
 def partition(toc: str, destination: str, num_partitions=100):
@@ -95,7 +55,7 @@ def partition(toc: str, destination: str, num_partitions=100):
         start_offset, end_offset = offsets[i], offsets[j]
         partition_fname = f"{destination}/{num_partition}.cbor"
         partition_toc_fname = f"{destination}/{num_partition}.cbor.toc"
-        partition_size = end_offset - start_offset
+        # partition_size = end_offset - start_offset
         
         # Invoke dd and do the actual splitting
         # skip is defined in terms of the input size
@@ -124,32 +84,56 @@ class WikipediaCBOR(Dataset):
     def __init__(self,
                  cbor_path: str,
                  partition_path: str,
-                 # old_wikipedia_cbor: WikipediaCBOR = None, # that's a horrible debugging hack
-                 max_entity_num=1_000_000,
-                 num_partitions=None):
+                 max_entity_num=10_000,
+                 num_partitions=None,
+                 clean_cache=False
+                 ):
         """
-        :param cbor_path the path of the wikipedia cbor export
-        :param num_partitions the number of partitions to use (DEBUG!)
+        :param cbor_path the relative path of the wikipedia cbor export
+        :param partition_path the relative path of the partitions to use
+        :param max_entity_num the maximum number of allowed entities.
+        Only the top `max_entity_num` most frequent links are considered
+        (ties not broken, thus the actual number will be bigger)
+        :param num_partitions the number of partitions to use
+        :param clean_cache delete the old cache
         """
-        # Let trec deal with that in my place
         
         self.cbor_path = get_filename_path(cbor_path)
         self.partition_path = get_filename_path(partition_path)
-        
-        # TODO: kept here for debugging purposes, remove this
-        
-        # if old_wikipedia_cbor:
+        # FIXME can we cache this?
         self.cbor_toc_annotations = AnnotationsFile(self.cbor_path)
-        self.keys = np.fromiter(self.cbor_toc_annotations.keys(), dtype='<U64')
-        # preprocess and find the top k unique wikipedia links
-        self.key_titles = self.extract_readable_key_titles()
-        self.key_encoder = dict(zip(self.key_titles, itertools.count()))
 
-        # page frequencies
         self.max_entity_num = max_entity_num
-        self.total_freqs = self.__extract_links(num_partitions)
+
         
+        cache_path = os.path.split(self.cbor_path)[0]
+        key_file = os.path.join(cache_path, "sorted_keys.pkl")
+        if os.path.isfile(key_file) and not clean_cache:
+            with open(key_file, "rb") as pickle_cache:
+                self.keys, self.key_titles, self.key_encoder, self.valid_keys = \
+                    pickle.load(pickle_cache)
+            tqdm.tqdm.write("Loaded from cache")
+            
+        else:
+            tqdm.tqdm.write("Generating key cache")
+            self.keys = np.fromiter(self.cbor_toc_annotations.keys(), dtype='<U64')
+            # preprocess and find the top k unique wikipedia links
+            self.key_titles = self.extract_readable_key_titles()
+            self.key_encoder = dict(zip(self.key_titles, itertools.count()))
+            self.key_encoder["PAD"] = 0 # useful for batch transforming stuff
+            # self.key_decoder = dict(zip(self.key_encoder.keys(), self.key_encoder.values()))
+
+            # page frequencies
+            total_freqs = self.extract_links(num_partitions)
+            threshold_value = torch.kthvalue(total_freqs,
+                            len(total_freqs) - (max_entity_num - 1))[0]
+            self.valid_keys = set(torch.nonzero(total_freqs >= threshold_value).squeeze().tolist())
+ 
+            
+            with open(key_file, "wb") as pickle_cache:
+                pickle.dump((self.keys, self.key_titles, self.key_encoder, self.valid_keys), pickle_cache)
         
+       
     def extract_readable_key_titles(self):
         """
         Build a list of human-readable names of CBOR entries.
@@ -226,8 +210,6 @@ class WikipediaCBOR(Dataset):
         :returns a sparse torch tensor
         """
         
-        links = []
-        
         pages = self.__get_pages(partition_mmapped, offset_list)
         
         for page in pages:
@@ -235,8 +217,7 @@ class WikipediaCBOR(Dataset):
             if page is None:
                 continue
             
-            for skel in page.skeleton:
-                visit_section(skel, [], links, False)
+            links = self.tokenize(page, False)
             
         freqs = Counter(links)
 
@@ -254,14 +235,19 @@ class WikipediaCBOR(Dataset):
         return torch.sparse_coo_tensor(keys, values,
                                              size=(1, len(self)))
 
-    def __extract_links(self, num_partitions=None, partition_page_lim=1000, pages_per_worker=100):
+    def extract_links(self,
+                        num_partitions=None,
+                        partition_page_lim=1000,
+                        pages_per_worker=100) -> torch.LongTensor:
         """
         Create some page batches and count mention occurrences for each batch.
         Summate results.
 
         This method is threaded (hopefully for the common good).
         
+        :param num_partitions use only the given partitions. Useful for debugging
         :param partition_page_lim the maximum number of pages to take in a partition (None for all)
+        :param pages_per_worker the number of pages to assign to a worker.
         """
             
         if num_partitions is None:
@@ -323,12 +309,82 @@ class WikipediaCBOR(Dataset):
     def __len__(self):
         return len(self.keys)
     
-    def __tokenize(self, page: Page):
+    def tokenize(self, page: Page, tokenize=True):
+        """
+        Tokenize a given page. Perform tree traversal over a Page structure
+        and return the text and link tokens that constitute a page.
+
+        :param page the page to tokenize
+        :param tokenize if True, tokenize both text and links,
+        otherwise just extract the links (with no padding)
+
+        :return if `tokenize` is True then return a pair of token lists.
+            Otherwise, return single token list
+        TODO: add BIO support
+        """
+
         toks = []
         links = []
+
+        # This is the core of our DFS
+        def handle_section(skel: Section):
+            for subskel in skel.children:
+                visit_section(subskel)
+
+        def handle_list(skel: ParaList):
+            visit_section(skel.body)
+
+        def handle_para(skel: Para):
+            paragraph = skel.paragraph
+            bodies = paragraph.bodies
+
+            for body in bodies:
+                visit_section(body)
+
+        def handle_paratext(body: ParaBody):
+            if tokenize:
+                lemmas = tokenizer.tokenize(body.get_text())
+                lemmas = tokenizer.convert_tokens_to_ids(lemmas)
+                toks.extend(lemmas)
+                links.extend([self.key_encoder["PAD"]] * len(lemmas))
+
+        def handle_paralink(body: ParaLink):
+            lemmas = tokenizer.tokenize(body.get_text())
+            lemmas = tokenizer.convert_tokens_to_ids(lemmas)
+            if tokenize:
+                toks.extend(lemmas)
+                link_id = self.key_encoder.get(body.page, 0)
+                if link_id in self.valid_keys:
+                    links.extend([link_id] + [0] * (len(lemmas) - 1))
+                else:
+                    links.extend([0] * len(lemmas))
+            else:
+                links.append(body.page)
+            pass
+
+        def nothing():
+            return lambda body: None
+
+        handler = defaultdict(nothing, {Section: handle_section,
+                            Para: handle_para,
+                            List: handle_list,
+                            ParaLink: handle_paralink,
+                            ParaText: handle_paratext})
+
+
+        def visit_section(skel):
+            # Recur on the sections
+            handler[type(skel)](skel)
+
+
+
         for skel in page.skeleton:
-            visit_section(skel, toks, links)
-        return toks, links
+            visit_section(skel)
+        
+        if tokenize:
+            return toks, links
+        else:
+            return links
     
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
@@ -336,11 +392,10 @@ class WikipediaCBOR(Dataset):
         
         elif type(idx) != list:
             idx = [idx]
-        
+
+        # FIXME: can/should we parallelize this?
+        # Nah
         pages = [self.cbor_toc_annotations.get(k.encode('ascii')) for k in self.keys[idx]]
-        
-        # can we parallelize this?
-        result = [self.__tokenize(page) for page in pages]
-        print(result)
+        result = [self.tokenize(page) for page in pages]
         
         return torch.tensor(result)
