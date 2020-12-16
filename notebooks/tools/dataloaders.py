@@ -22,7 +22,7 @@ import tqdm
 from transformers import BertTokenizer, BertConfig
 from keras.preprocessing.sequence import pad_sequences
 
-
+import bisect
 import concurrent.futures as futures
 import itertools
 import mmap
@@ -32,11 +32,16 @@ import subprocess
 
 from typing import List, Union, Iterable, Tuple
 
-def partition(toc: str, destination: str, num_partitions=100):
+def partition(cbor_dump_path: str, destination: str, num_partitions=100, calculate_only=False):
     """
     Partition a given CBOR file with a toc to a number of given partitions.
+
+    :param toc the position of the cbor dump
+    :param destination the destination of the partitions
+    :param calculate_only if True do not actually make the partitions.
     """
-    with wrap_open(toc + ".toc", "rb") as f:
+
+    with wrap_open(cbor_dump_path + ".toc", "rb") as f:
         toc_file = cbor.load(f)
     
     offsets = list(toc_file.values())
@@ -46,27 +51,52 @@ def partition(toc: str, destination: str, num_partitions=100):
     os.makedirs(destination, exist_ok=True)
 
     # bucketize
-    for num_partition, i in enumerate(tqdm.trange(0, len(offsets), (len(offsets) // num_partitions) + 1)):
-        j = min(i + (len(offsets) // num_partitions) + 1, len(offsets) - 1)
+    partition_mapping_fname = f"{destination}/partition_offsets.txt"
+
+    partition_mapping_file = wrap_open(partition_mapping_fname, "w")
+
+    block_size = len(offsets) // num_partitions
+
+    for num_partition in range(num_partitions):
+        i = num_partition * block_size
+        j = min (i + block_size, len(offsets) - 1)
+
+        print(i, j)
+
         start_offset, end_offset = offsets[i], offsets[j]
+
+        count = end_offset - start_offset
+        print(count)
+
         partition_fname = f"{destination}/{num_partition}.cbor"
         partition_toc_fname = f"{destination}/{num_partition}.cbor.toc"
         # partition_size = end_offset - start_offset
+
         
-        # Invoke dd and do the actual splitting
-        # skip is defined in terms of the input size
-        # keep obs high to ensure decent throughput.
-        # use tqdm to get a nice status bar for dd (will it work?)
-        proc = subprocess.Popen(["dd", f"if={get_filename_path(toc)}", f"of={partition_fname}",
-                        "ibs=1", "obs=1M", f"skip={start_offset}", f"count={end_offset-start_offset}",
-                        "status=progress"], stdout=subprocess.PIPE)
         
-        # tqdm.tqdm.write(proc.stdout.readline().decode('utf-8'))
+        if not calculate_only:
+            # Invoke dd and do the actual splitting
+            # skip is defined in terms of the input size
+            # keep obs high to ensure decent throughput.
+            # use tqdm to get a nice status bar for dd (will it work?)
+            # I am aware os.system is an antipattern.
+            # I am so tired right now and Jeff is gonna kill me.
+            os.system(" ".join(["dd", f"if={get_filename_path(cbor_dump_path)}",
+                f"of={partition_fname}",
+                "ibs=1", "obs=1M", f"skip={start_offset}",
+                f"count={end_offset-start_offset}",
+                "status=progress"]))
+            
+            # tqdm.tqdm.write(proc.stdout.readline().decode('utf-8'))
         
         # write the per-partition toc file
         with wrap_open(partition_toc_fname, "w") as output_toc:
             for off in offsets[i:j+1]:
                 output_toc.write(str(off - start_offset) + "\n")
+        
+        partition_mapping_file.write(f"{start_offset}\n")
+    
+    partition_mapping_file.close()
 
 
 def b2i(x):
@@ -112,12 +142,16 @@ class WikipediaCBOR(Dataset):
         self.max_entity_num = max_entity_num
         self.token_length = token_length
 
+        self.offsets = list(self.cbor_toc_annotations.toc.values())
+        self.offsets.sort()
+
         # Download vocabulary from S3 and cache.
         self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
                                         'tokenizer', 'bert-base-uncased')
         
         cache_path = os.path.split(self.cbor_path)[0]
         key_file = os.path.join(cache_path, "sorted_keys.pkl")
+
         if os.path.isfile(key_file) and not clean_cache:
             with open(key_file, "rb") as pickle_cache:
                 # NOTE: total freqs were not saved
@@ -143,6 +177,12 @@ class WikipediaCBOR(Dataset):
             
             with open(key_file, "wb") as pickle_cache:
                 pickle.dump((self.keys, self.key_titles, self.key_encoder, self.valid_keys), pickle_cache)
+
+        offset_list_path = os.path.join(self.partition_path, "partition_offsets.txt")
+
+        with wrap_open(offset_list_path) as f:
+            self.partition_offsets = [int(x) for x in f.readlines()]
+        
         
        
     def extract_readable_key_titles(self):
@@ -174,15 +214,11 @@ class WikipediaCBOR(Dataset):
             else:
                 raise Exception("Wrong header")
                 
-        # Sorted seeks should make the OS scheduler less confused, hopefully
-        values = list(self.cbor_toc_annotations.toc.values())
-        values.sort()
-        
         key_titles = set()
-        
+
         # If reloaded for a second time, this should be way faster.
         with mmap.mmap(self.cbor_toc_annotations.cbor.fileno(), 0, mmap.MAP_PRIVATE) as cbor_file:
-            for offset in tqdm.tqdm(values, desc="Extracting human-readable page titles"):
+            for offset in tqdm.tqdm(self.offsets, desc="Extracting human-readable page titles"):
                 key_titles.add(extract_from_key(offset))
                 
         return key_titles
@@ -241,7 +277,7 @@ class WikipediaCBOR(Dataset):
 
     def extract_links(self,
                         num_partitions=None,
-                        partition_page_lim=100,
+                        partition_page_lim=1000,
                         pages_per_worker=100) -> torch.LongTensor:
         """
         Create some page batches and count mention occurrences for each batch.
@@ -408,6 +444,16 @@ class WikipediaCBOR(Dataset):
         else:
             return links
     
+    def key2partition(self, key):
+        """
+        Find the partition that possesses the given key
+        """
+        partition_id = bisect.bisect_right(self.partition_offsets, key) - 1
+        assert partition_id >= 0, "Keys in the CBOR header section not allowed"
+        offset = key - self.partition_offsets[partition_id]
+
+        return (partition_id, offset)
+    
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
@@ -415,9 +461,17 @@ class WikipediaCBOR(Dataset):
         elif type(idx) != list:
             idx = [idx]
 
-        # FIXME: can/should we parallelize this?
-        # Nah
-        pages = [self.cbor_toc_annotations.get(k.encode('ascii')) for k in self.keys[idx]]
+
+        # Perform memory mapping
+        pages = []
+        for i in idx:
+            k = self.offsets[i]
+            partition_id, offset = self.key2partition(k)
+            print(partition_id, offset)
+            with wrap_open(os.path.join(self.partition_path, f"{partition_id}.cbor"), "rb") as partition_file:
+                with mmap.mmap(partition_file.fileno(), 0, flags=mmap.MAP_PRIVATE) as partition_mmapped:
+                    pages.extend(self.__get_pages(partition_mmapped, [offset]))
+        
         result = [self.tokenize(page) for page in pages]
 
         return torch.tensor(result)
