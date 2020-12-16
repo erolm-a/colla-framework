@@ -32,7 +32,6 @@ import subprocess
 
 from typing import List, Union, Iterable
 
-tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-base-uncased')    # Download vocabulary from S3 and cache.
 
 
 
@@ -105,11 +104,15 @@ class WikipediaCBOR(Dataset):
 
         self.max_entity_num = max_entity_num
 
+        # Download vocabulary from S3 and cache.
+        self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
+                                        'tokenizer', 'bert-base-uncased')
         
         cache_path = os.path.split(self.cbor_path)[0]
         key_file = os.path.join(cache_path, "sorted_keys.pkl")
         if os.path.isfile(key_file) and not clean_cache:
             with open(key_file, "rb") as pickle_cache:
+                # NOTE: total freqs were not saved
                 self.keys, self.key_titles, self.key_encoder, self.valid_keys = \
                     pickle.load(pickle_cache)
             tqdm.tqdm.write("Loaded from cache")
@@ -124,10 +127,10 @@ class WikipediaCBOR(Dataset):
             # self.key_decoder = dict(zip(self.key_encoder.keys(), self.key_encoder.values()))
 
             # page frequencies
-            total_freqs = self.extract_links(num_partitions)
-            threshold_value = torch.kthvalue(total_freqs,
-                            len(total_freqs) - (max_entity_num - 1))[0]
-            self.valid_keys = set(torch.nonzero(total_freqs >= threshold_value).squeeze().tolist())
+            self.total_freqs = self.extract_links(num_partitions)
+            threshold_value = torch.kthvalue(self.total_freqs,
+                            len(self.total_freqs) - (max_entity_num - 1))[0]
+            self.valid_keys = set(torch.nonzero(self.total_freqs >= threshold_value).squeeze().tolist())
  
             
             with open(key_file, "wb") as pickle_cache:
@@ -237,8 +240,8 @@ class WikipediaCBOR(Dataset):
 
     def extract_links(self,
                         num_partitions=None,
-                        partition_page_lim=1000,
-                        pages_per_worker=100) -> torch.LongTensor:
+                        partition_page_lim=10000,
+                        pages_per_worker=1000) -> torch.LongTensor:
         """
         Create some page batches and count mention occurrences for each batch.
         Summate results.
@@ -273,7 +276,7 @@ class WikipediaCBOR(Dataset):
             if partition_page_lim is None:
                 _partition_page_lim = len(offset_lists[partition_id])
             else:
-                _partition_page_lim = partition_page_lim
+                _partition_page_lim = min([partition_page_lim, len(offset_lists[partition_id])])
 
             # We create a number of workers and round-robin on each partition.
             # list transpose does the trick
@@ -343,14 +346,14 @@ class WikipediaCBOR(Dataset):
 
         def handle_paratext(body: ParaBody):
             if tokenize:
-                lemmas = tokenizer.tokenize(body.get_text())
-                lemmas = tokenizer.convert_tokens_to_ids(lemmas)
+                lemmas = self.tokenizer.tokenize(body.get_text())
+                lemmas = self.tokenizer.convert_tokens_to_ids(lemmas)
                 toks.extend(lemmas)
                 links.extend([self.key_encoder["PAD"]] * len(lemmas))
 
         def handle_paralink(body: ParaLink):
-            lemmas = tokenizer.tokenize(body.get_text())
-            lemmas = tokenizer.convert_tokens_to_ids(lemmas)
+            lemmas = self.tokenizer.tokenize(body.get_text())
+            lemmas = self.tokenizer.convert_tokens_to_ids(lemmas)
             if tokenize:
                 toks.extend(lemmas)
                 link_id = self.key_encoder.get(body.page, 0)
