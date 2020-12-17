@@ -522,9 +522,9 @@ class WikipediaCBOR(Dataset):
         # TODO: possibly change the float format to float16...
         # Does the change happen when moving to GPU?
         # Need to investigate this...
-        toks_list = torch.IntTensor(toks_list).squeeze()
+        toks_list = torch.LongTensor(toks_list).squeeze()
         attns_list = torch.FloatTensor(attns_list).squeeze()
-        links_list = torch.IntTensor(links_list).squeeze()
+        links_list = torch.LongTensor(links_list).squeeze()
 
         return (toks_list, attns_list, links_list)
 
