@@ -121,6 +121,7 @@ class WikipediaCBOR(Dataset):
                  partition_path: str,
                  max_entity_num=10_000,
                  num_partitions=None,
+                 page_lim=None,
                  token_length=768,
                  clean_cache=False,
                  ):
@@ -131,19 +132,17 @@ class WikipediaCBOR(Dataset):
         Only the top `max_entity_num` most frequent links are considered
         (ties not broken, thus the actual number will be bigger)
         :param num_partitions the number of partitions to use
+        :param page_lim the number of pages in a partition
         :param token_length return only the first `token_length` tokens of a page.
         :param clean_cache delete the old cache
         """
         
         self.cbor_path = get_filename_path(cbor_path)
         self.partition_path = get_filename_path(partition_path)
-        # FIXME can we cache this?
-        self.cbor_toc_annotations = AnnotationsFile(self.cbor_path)
+        
         self.max_entity_num = max_entity_num
         self.token_length = token_length
 
-        self.offsets = list(self.cbor_toc_annotations.toc.values())
-        self.offsets.sort()
 
         # Download vocabulary from S3 and cache.
         self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
@@ -151,39 +150,48 @@ class WikipediaCBOR(Dataset):
         
         cache_path = os.path.split(self.cbor_path)[0]
         key_file = os.path.join(cache_path, "sorted_keys.pkl")
+        
+        offset_list_path = os.path.join(self.partition_path,
+                                        "partition_offsets.txt")
+
+        with wrap_open(offset_list_path) as f:
+            self.partition_offsets = [int(x) for x in f.readlines()]
+        
 
         if os.path.isfile(key_file) and not clean_cache:
             with open(key_file, "rb") as pickle_cache:
                 # NOTE: total freqs were not saved
-                self.keys, self.key_titles, self.key_encoder, self.valid_keys = \
-                    pickle.load(pickle_cache)
+                self.offsets, self.key_titles, self.key_encoder, \
+                    self.valid_keys = pickle.load(pickle_cache)
             tqdm.tqdm.write("Loaded from cache")
             
         else:
             tqdm.tqdm.write("Generating key cache")
-            self.keys = np.fromiter(self.cbor_toc_annotations.keys(), dtype='<U64')
-            # preprocess and find the top k unique wikipedia links
+            
+            self.cbor_toc_annotations = AnnotationsFile(self.cbor_path)
+            self.offsets = np.array(list(self.cbor_toc_annotations.toc.values()))
+            self.offsets.sort()
+
             self.key_titles = self.extract_readable_key_titles()
             self.key_encoder = dict(zip(self.key_titles, itertools.count()))
             self.key_encoder["PAD"] = 0 # useful for batch transforming stuff
             # self.key_decoder = dict(zip(self.key_encoder.keys(), self.key_encoder.values()))
 
-            # page frequencies
-            self.total_freqs = self.extract_links(num_partitions)
+            # preprocess and find the top k unique wikipedia links
+            self.total_freqs = self.extract_links(num_partitions, partition_page_lim=page_lim)
             threshold_value = torch.kthvalue(self.total_freqs,
                             len(self.total_freqs) - (max_entity_num - 1))[0]
-            self.valid_keys = set(torch.nonzero(self.total_freqs >= threshold_value).squeeze().tolist())
+            self.valid_keys = set(torch.nonzero(
+                self.total_freqs >= threshold_value).squeeze().tolist())
  
             
             with open(key_file, "wb") as pickle_cache:
-                pickle.dump((self.keys, self.key_titles, self.key_encoder, self.valid_keys), pickle_cache)
+                pickle.dump((self.offsets, self.key_titles, self.key_encoder,
+                             self.valid_keys), pickle_cache)
 
-        offset_list_path = os.path.join(self.partition_path, "partition_offsets.txt")
-
-        with wrap_open(offset_list_path) as f:
-            self.partition_offsets = [int(x) for x in f.readlines()]
         
         
+    
        
     def extract_readable_key_titles(self):
         """
@@ -291,7 +299,7 @@ class WikipediaCBOR(Dataset):
         """
             
         if num_partitions is None:
-            num_partitions = 100 # TODO: automatically determine this
+            num_partitions = len(self.partition_offsets)
 
        
         offset_lists = []
@@ -347,7 +355,7 @@ class WikipediaCBOR(Dataset):
     
     
     def __len__(self):
-        return len(self.keys)
+        return len(self.offsets)
     
     def tokenize(self,
                  page: Page,
@@ -443,6 +451,9 @@ class WikipediaCBOR(Dataset):
             return toks[0], links[0]
         else:
             return links
+       
+    def get_attention_mask(self, tokens):
+        return [float(tok != 0) for tok in tokens]
     
     def key2partition(self, key):
         """
@@ -455,6 +466,15 @@ class WikipediaCBOR(Dataset):
         return (partition_id, offset)
     
     def __getitem__(self, idx):
+        """
+        Return a tensor with the given batches. The shape of a batch is
+        (b x 3 x MAX_LEN).
+        
+        The first row is the token embedding via WordPiece ids.
+        The second row is the BERT attention mask.
+        The third row is the expected Entity Linking output.
+        """
+        
         if torch.is_tensor(idx):
             idx = idx.tolist()
         
@@ -467,11 +487,14 @@ class WikipediaCBOR(Dataset):
         for i in idx:
             k = self.offsets[i]
             partition_id, offset = self.key2partition(k)
-            print(partition_id, offset)
             with wrap_open(os.path.join(self.partition_path, f"{partition_id}.cbor"), "rb") as partition_file:
                 with mmap.mmap(partition_file.fileno(), 0, flags=mmap.MAP_PRIVATE) as partition_mmapped:
                     pages.extend(self.__get_pages(partition_mmapped, [offset]))
         
-        result = [self.tokenize(page) for page in pages]
+        result = []
+        for page in pages:
+            toks, links = self.tokenize(page)
+            attns = self.get_attention_mask(toks)
+            result.append((toks, attns, links))
 
         return torch.tensor(result)
