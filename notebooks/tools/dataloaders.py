@@ -30,6 +30,10 @@ import pickle
 import random
 import subprocess
 
+from deprecated import deprecated
+
+import tokenizer_cereal
+
 from typing import List, Union, Iterable, Tuple
 
 def partition(cbor_dump_path: str, destination: str, num_partitions=100, calculate_only=False):
@@ -355,18 +359,20 @@ class WikipediaCBOR(Dataset):
         return len(self.offsets)
 
     
+    
+    @deprecated
     def tokenize(self,
                  page: Page,
-                 tokenize=True) -> Union[List[int], Tuple[List[int], List[int]]]:
+                 extract_all=True) -> Union[List[int], Tuple[List[int], List[int]]]:
         """
         Tokenize a given page. Perform tree traversal over a Page structure
         and return the text and link tokens that constitute a page.
 
         :param page the page to tokenize
-        :param tokenize if True, tokenize both text and links,
+        :param extract_all if True, tokenize both text and links,
         otherwise just extract the links (with no padding)
 
-        :return if `tokenize` is True then return a pair of token lists.
+        :return if `extract_links_only` is True then return a pair of token lists.
             Otherwise, return single token list
         TODO: add BIO support
         TODO: allow to access more than the first `self.token_length` tokens.
@@ -402,8 +408,8 @@ class WikipediaCBOR(Dataset):
                 visit_section(body)
 
         def handle_paratext(body: ParaBody):
-            if tokenize:
-                lemmas = self.tokenizer.tokenize(body.get_text())
+            if extract_all:
+                lemmas = self.tokenizer.extract_links_only(body.get_text())
                 lemmas = self.tokenizer.convert_tokens_to_ids(lemmas)
 
                 if len(lemmas) + len(toks) > self.token_length:
@@ -413,8 +419,8 @@ class WikipediaCBOR(Dataset):
                 links.extend([self.key_encoder.get("PAD")] * len(lemmas))
 
         def handle_paralink(body: ParaLink):
-            if tokenize:
-                lemmas = self.tokenizer.tokenize(body.get_text())
+            if extract_all:
+                lemmas = self.tokenizer.extract_links_only(body.get_text())
                 lemmas = self.tokenizer.convert_tokens_to_ids(lemmas)
 
                 if len(lemmas) + len(links) > self.token_length:
@@ -448,7 +454,7 @@ class WikipediaCBOR(Dataset):
         for skel in page.skeleton:
             visit_section(skel)
         
-        if tokenize:
+        if extract_all:
             toks = pad_sequences([toks], maxlen=self.token_length, dtype="long",
                                  value=0.0, truncating="post", padding="post")
 
@@ -479,6 +485,14 @@ class WikipediaCBOR(Dataset):
         offset = key - self.partition_offsets[partition_id]
 
         return (partition_id, offset)
+    
+    def preprocess_partititon(self, idx):
+        """
+        Transform a list of
+        """
+        pass
+        
+        
     
     def __getitem__(self, idx):
         """
@@ -639,7 +653,7 @@ class BIO:
         labels = []
         
         for word, label in zip(sentence, text_labels):
-            tokenized_word = self.tokenizer.tokenize(word)
+            tokenized_word = self.tokenizer.extract_links_only(word)
             n_subwords = len(tokenized_word)
             
             tokenized_sentence.extend(tokenized_word)
