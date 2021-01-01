@@ -23,6 +23,7 @@ from keras.preprocessing.sequence import pad_sequences
 
 import bisect
 import concurrent.futures as futures
+from io import BytesIO#, StringIO
 import itertools
 import mmap
 import os
@@ -36,74 +37,8 @@ import tokenizer_cereal
 
 from typing import List, Union, Iterable, Tuple
 
-def partition(cbor_dump_path: str, destination: str, num_partitions=100, calculate_only=False):
-    """
-    Partition a given CBOR file with a toc to a number of given partitions.
-
-    :param toc the position of the cbor dump
-    :param destination the destination of the partitions
-    :param calculate_only if True do not actually make the partitions.
-    """
-
-    with wrap_open(cbor_dump_path + ".toc", "rb") as f:
-        toc_file = cbor.load(f)
-    
-    offsets = list(toc_file.values())
-    offsets.sort()
-    
-    destination = get_filename_path(destination)
-    os.makedirs(destination, exist_ok=True)
-
-    # bucketize
-    partition_mapping_fname = f"{destination}/partition_offsets.txt"
-
-    partition_mapping_file = wrap_open(partition_mapping_fname, "w")
-
-    block_size = len(offsets) // num_partitions
-
-    for num_partition in range(num_partitions):
-        i = num_partition * block_size
-        j = min (i + block_size, len(offsets) - 1)
-
-        print(i, j)
-
-        start_offset, end_offset = offsets[i], offsets[j]
-
-        count = end_offset - start_offset
-        print(count)
-
-        partition_fname = f"{destination}/{num_partition}.cbor"
-        partition_toc_fname = f"{destination}/{num_partition}.cbor.toc"
-        # partition_size = end_offset - start_offset
-        
-        if not calculate_only:
-            # Invoke dd and do the actual splitting
-            # skip is defined in terms of the input size
-            # keep obs high to ensure decent throughput.
-            # use tqdm to get a nice status bar for dd (will it work?)
-            # I am aware os.system is an antipattern.
-            # I am so tired right now and Jeff is gonna kill me.
-            os.system(" ".join(["dd", f"if={get_filename_path(cbor_dump_path)}",
-                f"of={partition_fname}",
-                "ibs=1", "obs=1M", f"skip={start_offset}",
-                f"count={end_offset-start_offset}",
-                "status=progress"]))
-            
-            # tqdm.tqdm.write(proc.stdout.readline().decode('utf-8'))
-        
-        # write the per-partition toc file
-        with wrap_open(partition_toc_fname, "w") as output_toc:
-            for off in offsets[i:j+1]:
-                output_toc.write(str(off - start_offset) + "\n")
-        
-        partition_mapping_file.write(f"{start_offset}\n")
-    
-    partition_mapping_file.close()
-
-
 def b2i(x):
     return int.from_bytes(x, "big")
-
 
 class WikipediaCBOR(Dataset):
     """
@@ -144,11 +79,10 @@ class WikipediaCBOR(Dataset):
         
         self.max_entity_num = max_entity_num
         self.token_length = token_length
-
-
+        
         # Download vocabulary from S3 and cache.
-        self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
-                                        'tokenizer', 'bert-base-uncased')
+        #self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
+        #                                'tokenizer', 'bert-base-uncased')
         
         cache_path = os.path.split(self.cbor_path)[0]
         key_file = os.path.join(cache_path, "sorted_keys.pkl")
@@ -166,7 +100,6 @@ class WikipediaCBOR(Dataset):
                 self.offsets, self.key_titles, self.key_encoder, \
                     self.valid_keys = pickle.load(pickle_cache)
             tqdm.tqdm.write("Loaded from cache")
-            
         else:
             tqdm.tqdm.write("Generating key cache")
             
@@ -177,21 +110,26 @@ class WikipediaCBOR(Dataset):
             self.key_titles = self.extract_readable_key_titles()
             self.key_encoder = dict(zip(self.key_titles, itertools.count()))
             self.key_encoder["PAD"] = 0 # useful for batch transforming stuff
+
+            # FIXME
+            self.valid_keys = set(self.key_encoder.values())
             # self.key_decoder = dict(zip(self.key_encoder.keys(), self.key_encoder.values()))
 
             # preprocess and find the top k unique wikipedia links
+            """
             self.total_freqs = self.extract_links(num_partitions, partition_page_lim=page_lim)
             threshold_value = torch.kthvalue(self.total_freqs,
                             len(self.total_freqs) - (max_entity_num - 1))[0]
             self.valid_keys = set(torch.nonzero(
                 self.total_freqs >= threshold_value).squeeze().tolist())
+             """
             
             with open(key_file, "wb") as pickle_cache:
                 pickle.dump((self.offsets, self.key_titles, self.key_encoder,
                              self.valid_keys), pickle_cache)
 
         # map the original "sparser" keys to a smaller set - as long as token_length in theory
-        self.key_restrictor = dict(zip(self.valid_keys, range(self.max_entity_num)))
+        #self.key_restrictor = dict(zip(self.valid_keys, range(self.max_entity_num)))
     
        
     def extract_readable_key_titles(self):
@@ -232,238 +170,11 @@ class WikipediaCBOR(Dataset):
                 
         return key_titles
      
-
-    def __get_pages (self,
-                     partition_mmapped,
-                     offset_list: Iterable[int]) -> List[Page]:
-        """
-        Extract all the Page's from a CBOR partition file.
-        It returns the list of pages in a partition.
-        (Generators are not thread-safe).
-        
-        :param partition_id the mmapped stream of the partition
-        :param offset_list the list of page offsets within the partition
-        """
-        
-        pages = []
-        for idx in offset_list:
-            loaded_cbor = cbor.loads(partition_mmapped[idx:])
-            pages.append(Page.from_cbor(loaded_cbor))
-
-        return pages
-        #return [Page.from_cbor(next(cbor.load(partition_mmapped[idx:])) for idx in offset_list)]
-        #yield from [Page.from_cbor(cbor.loads(partition_mmapped[idx:]) for idx in offset_list)
-
-
-    def __extract_links_monothreaded(self,
-                                     partition_mmapped,
-                                     offset_list: Iterable[int]) -> torch.sparse.LongTensor:
-        """
-        Calculate the frequency of each mention in wikipedia.
-        
-        :param partition_id the partition to use
-        :param offset_list the list of offset within that partition
-        :returns a sparse torch tensor
-        """
-        
-        pages = self.__get_pages(partition_mmapped, offset_list)
-        
-        for page in pages:
-            # remove spurious None elements
-            if page is None:
-                continue
-            
-            links = self.tokenize(page, False)
-            
-        freqs = Counter(links)
-
-        keys = np.array([[0, k] for k in freqs.keys()]).T.reshape(2, -1)
-        values = np.fromiter(freqs.values(), dtype=np.int32)
-
-        return torch.sparse_coo_tensor(keys, values,
-                                             size=(1, len(self)))
-    
-
-    def extract_links(self,
-                        num_partitions=None,
-                        partition_page_lim=1000,
-                        pages_per_worker=100) -> torch.LongTensor:
-        """
-        Create some page batches and count mention occurrences for each batch.
-        Summate results.
-
-        This method is threaded (hopefully for the common good).
-        
-        :param num_partitions use only the given partitions. Useful for debugging
-        :param partition_page_lim the maximum number of pages to take in a partition (None for all)
-        :param pages_per_worker the number of pages to assign to a worker.
-        """
-            
-        if num_partitions is None:
-            num_partitions = len(self.partition_offsets)
-
-       
-        offset_lists = []
-        mmapped = []
-        for partition_id in tqdm.trange(num_partitions, desc="Reading partition tocs"):
-            with open(os.path.join(self.partition_path, f"{partition_id}.cbor.toc")) as f:
-                offset_lists.append([int(line.strip()) for line in f.readlines()])
-
-            with open(os.path.join(self.partition_path, f"{partition_id}.cbor")) as f:
-                mmapped.append(mmap.mmap(f.fileno(), 0, flags=mmap.MAP_PRIVATE))
-            
-        
-        starting_tensor = torch.sparse.LongTensor(1, len(self))
-        tensors = []
-        with futures.ThreadPoolExecutor() as executor:
-            promises = []
-
-            
-            if partition_page_lim is None:
-                _partition_page_lim = len(offset_lists[partition_id])
-            else:
-                _partition_page_lim = min([partition_page_lim, len(offset_lists[partition_id])])
-
-            # We create a number of workers and round-robin on each partition.
-            # list transpose does the trick
-            args_list = []
-            for partition_id in range(num_partitions):
-                args_list.append([])
-                for idx in range(0, _partition_page_lim, pages_per_worker):
-                    chosen_page_offsets = offset_lists[partition_id][idx:min(idx+pages_per_worker, _partition_page_lim)]
-                    args_list[-1].append((self.__extract_links_monothreaded,
-                                                mmapped[partition_id],
-                                                chosen_page_offsets))
-                    #tensors.append(self.__extract_links_monothreaded(partition_id, chosen_page_offsets))
-
-            # https://stackoverflow.com/a/6473724
-            args_list = map(list, zip(*args_list))
-
-            # Flatten the list, and actually send the work
-            for args in tqdm.tqdm(list(itertools.chain(*args_list)), desc="Scheduling work batches..."):
-                promises.append(executor.submit(*args))
-
-            for promise in tqdm.tqdm(futures.as_completed(promises), desc="Merging tokenized text"):
-                tensors.append(promise.result())
-        
-        # cleanup before merging
-        for mmapped_ in mmapped:
-            mmapped_.close()
-
-        # Stack the tensors, get rid of the dummy singleton (0) and sum column-wise (1)
-        # Squeezes are not possible as sparse tensors have no strides
-        return torch.sparse.sum(torch.stack(tensors), [0, 1]).to_dense()
-    
-    
     def __len__(self):
+        # TODO: change this into the number of blocks
         return len(self.offsets)
 
     
-    
-    @deprecated
-    def tokenize(self,
-                 page: Page,
-                 extract_all=True) -> Union[List[int], Tuple[List[int], List[int]]]:
-        """
-        Tokenize a given page. Perform tree traversal over a Page structure
-        and return the text and link tokens that constitute a page.
-
-        :param page the page to tokenize
-        :param extract_all if True, tokenize both text and links,
-        otherwise just extract the links (with no padding)
-
-        :return if `extract_links_only` is True then return a pair of token lists.
-            Otherwise, return single token list
-        TODO: add BIO support
-        TODO: allow to access more than the first `self.token_length` tokens.
-        """
-
-        toks = []
-        links = []
-
-        # Encode a link. Cast to padding if the link was not "common".
-        # Call this method only after preprocessing has been done!
-        def encode_link(link):
-            return self.key_restrictor.get(self.key_encoder.get(link, 0), 0)
-            #return self.key_encoder.get(link, 0)
-
-        # People say pattern matching is overrated.
-        # I beg to differ.
-        # (It's also true that a tree structure for tokenization makes
-        # absolutely no sense - but I don't get to decide things apparently).
-        def handle_section(skel: Section):
-            for subskel in skel.children:
-                if len(toks) >= self.token_length:
-                    return
-                visit_section(subskel)
-
-        def handle_list(skel: ParaList):
-            visit_section(skel.body)
-
-        def handle_para(skel: Para):
-            paragraph = skel.paragraph
-            bodies = paragraph.bodies
-
-            for body in bodies:
-                visit_section(body)
-
-        def handle_paratext(body: ParaBody):
-            if extract_all:
-                lemmas = self.tokenizer.extract_links_only(body.get_text())
-                lemmas = self.tokenizer.convert_tokens_to_ids(lemmas)
-
-                if len(lemmas) + len(toks) > self.token_length:
-                    lemmas = lemmas[:(self.token_length - len(toks))]
-
-                toks.extend(lemmas)
-                links.extend([self.key_encoder.get("PAD")] * len(lemmas))
-
-        def handle_paralink(body: ParaLink):
-            if extract_all:
-                lemmas = self.tokenizer.extract_links_only(body.get_text())
-                lemmas = self.tokenizer.convert_tokens_to_ids(lemmas)
-
-                if len(lemmas) + len(links) > self.token_length:
-                    lemmas = lemmas[:(self.token_length - len(links))]
-
-                toks.extend(lemmas)
-                link_id = encode_link(body.page)
-
-                if link_id in self.valid_keys:
-                    links.extend([link_id] + [0] * (len(lemmas) - 1))
-                else:
-                    links.extend([0] * len(lemmas))
-            else:
-                links.append(self.key_encoder.get(body.page, 0))
-            pass
-
-        def nothing():
-            return lambda body: None
-
-        handler = defaultdict(nothing, {Section: handle_section,
-                            Para: handle_para,
-                            List: handle_list,
-                            ParaLink: handle_paralink,
-                            ParaText: handle_paratext})
-
-
-        def visit_section(skel):
-            # Recur on the sections
-            handler[type(skel)](skel)
-
-        for skel in page.skeleton:
-            visit_section(skel)
-        
-        if extract_all:
-            toks = pad_sequences([toks], maxlen=self.token_length, dtype="long",
-                                 value=0.0, truncating="post", padding="post")
-
-            links = pad_sequences([links], maxlen=self.token_length, dtype="long",
-                                 value=0.0, truncating="post", padding="post")
-            return toks[0], links[0]
-        else:
-            return links
-       
     def get_attention_mask(self, tokens: List[int], p=0.2):
         """
         Get an attention mask. Padding tokens are automatically masked out.
@@ -486,15 +197,113 @@ class WikipediaCBOR(Dataset):
 
         return (partition_id, offset)
     
-    def preprocess_partititon(self, idx):
+    def preprocess_page(self, page: Page):
         """
-        Transform a list of
+        Transform a list of pages into a flattened representation that can
+        then be easily (de)serialized.
         """
-        pass
-        
-        
+
+        # For the sake of easy link spans they are byte oriented to make
+        # it easier for the rust std
+        page_content = BytesIO()
+        links = []
+
+        # Encode a link. Cast to padding if the link was not "common".
+        # Call this method only after preprocessing has been done!
+        def encode_link(link):
+            #return self.key_restrictor.get(self.key_encoder.get(link, 0), 0)
+            return self.key_encoder.get(link, 0)
+
+        # People say pattern matching is overrated.
+        # I beg to differ.
+        # (It's also true that a tree structure for tokenization makes
+        # absolutely no sense - but I don't get to decide things apparently).
+        def handle_section(skel: Section):
+            for subskel in skel.children:
+                visit_section(subskel)
+
+        def handle_list(skel: ParaList):
+            visit_section(skel.body)
+
+        def handle_para(skel: Para):
+            paragraph = skel.paragraph
+            bodies = paragraph.bodies
+
+            for body in bodies:
+                visit_section(body)
+
+        def handle_paratext(body: ParaBody):
+            page_content.write(body.get_text().encode())
+
+        def handle_paralink(body: ParaLink):
+            encoded_link = encode_link(body.page)
+            start_byte_span = page_content.tell()
+            end_byte_span = start_byte_span + len(body.get_text().encode()) - 1
+            page_content.write(body.get_text().encode())
+
+            links.append((encoded_link, start_byte_span, end_byte_span ))
+
     
-    def __getitem__(self, idx):
+        def nothing():
+            return lambda body: None
+
+        handler = defaultdict(nothing, {Section: handle_section,
+                            Para: handle_para,
+                            List: handle_list,
+                            ParaLink: handle_paralink,
+                            ParaText: handle_paratext})
+
+        def visit_section(skel):
+            # Recur on the sections
+            handler[type(skel)](skel)
+
+        for skel in page.skeleton:
+            visit_section(skel)
+        
+        return {"text": page_content.getvalue(), "link_mentions": links}
+
+    def preprocess(self, limit=-1):
+        rust_cbor_path = self.partition_path + "/test_rust.cbor"
+        rust_cereal_path = self.partition_path + "/test_rust.cereal"
+
+        if limit == -1:
+            limit = len(self)
+
+        with open(rust_cbor_path, "wb") as fp:
+            offsets = []
+
+            with open(self.cbor_path, "rb") as cbor_fp:
+                for i, page in enumerate(tqdm.tqdm(read_data.iter_annotations(cbor_fp),
+                                                    total=limit)):
+                    if i >= limit:
+                        break
+
+                    offsets.append(fp.tell())
+
+                    parsed = self.preprocess_page(page)
+
+                    # enforce this key order
+                    parsed = {"id": i, **parsed}
+
+                    cbor.dump(parsed, fp)
+            
+        # save cumulated block sizes
+        blocks_per_page = tokenizer_cereal.tokenize_from_cbor_list(rust_cbor_path, rust_cereal_path, offsets, self.token_length)
+
+        with open(self.partition_path + "/cumulated_block_sizes.npy", "wb") as fp:
+            cumulated = np.cumsum(blocks_per_page)
+            np.save(fp, cumulated)
+    
+    def count_frequency(self):
+        """
+        Use rust to count the frequency, and *hope* and pray really hard that it's fast.
+        """
+        rust_cereal_path = self.partition_path + "/test_rust.cereal"
+
+        return tokenizer_cereal.count_frequency(rust_cereal_path)
+
+    
+    def __getitem__(self, idx: int):
         """
         Return a tensor with the given batches. The shape of a batch is
         (b x 3 x MAX_LEN).
@@ -502,43 +311,46 @@ class WikipediaCBOR(Dataset):
         The first row is the token embedding via WordPiece ids.
         The second row is the BERT attention mask.
         The third row is the expected Entity Linking output.
+
+        Given that we work with token blocks, we convert the provided indices
+        to the correct page and block offsets.
+
+        :param idx the index of the block to fetch.
         """
-        
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-        
-        elif type(idx) != list:
-            idx = [idx]
+ 
+        if type(idx) != int:
+            idx = idx[0]
 
+        slice_file = self.partition_path + "/test_rust.cereal"
 
-        # Perform memory mapping
-        pages = []
-        for i in idx:
-            k = self.offsets[i]
-            partition_id, offset = self.key2partition(k)
-            with wrap_open(os.path.join(self.partition_path, f"{partition_id}.cbor"), "rb") as partition_file:
-                with mmap.mmap(partition_file.fileno(), 0, flags=mmap.MAP_PRIVATE) as partition_mmapped:
-                    pages.extend(self.__get_pages(partition_mmapped, [offset]))
-        
-        
-        toks_list = []
-        attns_list = []
-        links_list = []
+        with open(self.partition_path + "/cumulated_block_sizes.npy", "rb") as fp:
+            cumulated = np.load(fp)
 
-        # Can we do this more efficiently?
-        for page in pages:
-            toks, links = self.tokenize(page)
-            attns = self.get_attention_mask(toks)
-            toks_list.append(toks)
-            attns_list.append(attns)
-            links_list.append(links)
+        page_idx = bisect.bisect_right(cumulated, idx)
+        page_block_nums = cumulated[page_idx] - (cumulated[page_idx-1] if page_idx > 0 else 0)
+        block_offset = idx - (cumulated[page_idx-1] if page_idx > 0 else 0)
+
+        # Too tired to properly handle this edge case
+        if page_block_nums == 0:
+            page_idx = 0
+            block_offset = 0
+        
+        toks, links = tokenizer_cereal.get_token_slice(slice_file, page_idx, block_offset, self.token_length)
+
+        toks = pad_sequences([toks], maxlen=self.token_length, dtype="long",
+                                value=0.0, truncating="post", padding="post")[0]
+
+        links = pad_sequences([links], maxlen=self.token_length, dtype="long",
+                                value=0.0, truncating="post", padding="post")[0]
+        
+        attns = self.get_attention_mask(toks)
 
         # TODO: possibly change the float format to float16...
         # Does the change happen when moving to GPU?
         # Need to investigate this...
-        toks_list = torch.LongTensor(toks_list).squeeze()
-        attns_list = torch.FloatTensor(attns_list).squeeze()
-        links_list = torch.LongTensor(links_list).squeeze()
+        toks_list = torch.LongTensor(toks).squeeze()
+        attns_list = torch.FloatTensor(attns).squeeze()
+        links_list = torch.LongTensor(links).squeeze()
 
         return (toks_list, attns_list, links_list)
 

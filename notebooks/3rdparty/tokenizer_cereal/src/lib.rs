@@ -10,8 +10,11 @@ extern crate anyhow;
 extern crate paste;
 extern crate simple_error;
 
+extern crate indicatif;
+
 use simple_error::SimpleError;
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::SeekFrom;
@@ -29,6 +32,8 @@ use pyo3::wrap_pyfunction;
 
 use itertools::Itertools;
 use paste::paste;
+
+use indicatif::ProgressBar;
 
 #[derive(Deserialize)]
 struct PageFormat {
@@ -79,19 +84,23 @@ macro_rules! cast_errors {
 fn tokenizer_cereal(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tokenize_from_cbor_list, m)?)?;
     m.add_function(wrap_pyfunction!(get_token_slice, m)?)?;
+    m.add_function(wrap_pyfunction!(count_frequency, m)?)?;
 
     Ok(())
 }
 
-cast_errors!(tokenize_from_cbor_list(cbor_path: &str, ouput_path: &str, offset_list: Vec<u64> ) -> () );
+cast_errors!(tokenize_from_cbor_list(cbor_path: &str, ouput_path: &str, offset_list: Vec<u64>, block_size: u32 ) -> Vec<u32> );
 cast_errors!(get_token_slice(cbor_path: &str, idx: usize, block_size: usize, content_block_idx: usize) -> (Vec<u32>, Vec<u32>));
+cast_errors!(count_frequency(cereal_path: &str) -> HashMap<u32, u32>);
+
 
 fn tokenize_from_cbor_list_helper(
     _py: Python,
     cbor_path: &str,
     output_path: &str,
     offset_list: Vec<u64>,
-) -> anyhow::Result<()> {
+    block_size: u32
+) -> anyhow::Result<Vec<u32>> {
     let mut offset_list = offset_list.clone();
     // try to open the given cbor file
     let mut cbor_file = File::open(cbor_path)?;
@@ -113,14 +122,14 @@ fn tokenize_from_cbor_list_helper(
 
     let mut page_outputs = vec![];
 
+    let pb = ProgressBar::new(offset_list.len() as u64);
+
     for (offset_start, offset_end) in offset_list.into_iter().tuple_windows() {
         let mut slice: Vec<u8> = vec![0; (offset_end - offset_start) as usize];
 
         cbor_file.read_exact(&mut slice).unwrap();
 
         let current_slice: PageFormat = serde_cbor::from_slice(&slice)?;
-
-        println!("Read message {}", current_slice.text);
 
         let encoding = tokenizer
             .encode(EncodeInput::Single(current_slice.text), false)
@@ -139,34 +148,25 @@ fn tokenize_from_cbor_list_helper(
             link_embedding,
         };
 
-        print!("Found tokens: ");
-
-        for encoding in &page_output.tokens {
-            print!("{} ", encoding);
-        }
-
-        println!();
-
-        print!("Found links: ");
-
-        for link in &page_output.link_embedding {
-            print!("{} ", link)
-        }
-        println!();
-
         page_outputs.push(page_output);
+
+        pb.inc(1);
     }
 
-    return write_slices(output_path, page_outputs);
+    drop(pb);
+
+    return write_slices(output_path, page_outputs, block_size);
 }
 
-fn write_slices(output_file: &str, page_outputs: Vec<PageFormatOutput>) -> anyhow::Result<()> {
+fn write_slices(output_file: &str, page_outputs: Vec<PageFormatOutput>, block_size: u32) -> anyhow::Result<Vec<u32>> {
     let output_file_tocs = output_file.to_owned() + ".toc";
     let mut output_file_stream = File::create(output_file)?;
     let output_file_tocs_stream = File::create(output_file_tocs)?;
 
+    let pb = ProgressBar::new(page_outputs.len() as u64);
+
     let mut offsets: Vec<u64> = page_outputs
-        .into_iter()
+        .iter()
         .scan(0 as usize, |prev_offset, page_output| {
 
             //wrap_cereal_error!(cereal::write_slice(&mut buf, &[page_output]))
@@ -180,15 +180,21 @@ fn write_slices(output_file: &str, page_outputs: Vec<PageFormatOutput>) -> anyho
             let old_offset = *prev_offset;
             *prev_offset += size;
 
+            pb.inc(1);
+
             Some(old_offset as u64)
         })
         .collect();
 
+    let blocks: Vec<u32> = page_outputs
+        .into_iter()
+        .map(|page_output| (page_output.tokens.len() as f32 / block_size as f32).floor() as u32)
+        .collect();
     // push EOF position - will make some calculations easier this way
     offsets.push(output_file_stream.seek(SeekFrom::End(0))?.to_owned());
     // output_file_tocs_stream.write_all(offsets.as_slice())?;
     bincode::serialize_into(output_file_tocs_stream, &offsets)?;
-    Ok(())
+    Ok(blocks)
 }
 
 /// Get a chosen slice batch from a tokenized slice file
@@ -256,4 +262,28 @@ fn extract_link_mask(
     }
 
     return link_ids;
+}
+
+fn count_frequency_helper(
+    _py: Python,
+    cereal_path: &str
+) -> anyhow::Result<HashMap<u32, u32>> {
+    let mut slice = File::open(cereal_path)?;
+    let toc_file = File::open(cereal_path.to_owned() + ".toc")?;
+    let slice_offsets: Vec<u64> = bincode::deserialize_from(toc_file)?;
+
+    let mut book_reviews = HashMap::new();
+
+    for (offset_start, offset_end) in slice_offsets.into_iter().tuple_windows() {
+        let mut buf: Vec<u8> = vec![0; (offset_end - offset_start) as usize];
+        slice.read_exact(buf.as_mut_slice())?;
+
+        let parsed: PageFormatOutput = serde_cbor::from_slice(&buf)?;
+        for x in parsed.link_embedding {
+            let counter = book_reviews.entry(x).or_insert(0);
+            *counter += 1;
+        }
+    }
+
+    Ok(book_reviews)
 }
