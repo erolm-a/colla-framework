@@ -674,6 +674,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "indicatif",
  "itertools",
  "paste 1.0.4",
  "pyo3",
