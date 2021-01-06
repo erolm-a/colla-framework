@@ -73,6 +73,7 @@ class WikipediaCBOR(Dataset):
         self.partition_path = get_filename_path(partition_path)
         self.cutoff_frequency = cutoff_frequency
         self.token_length = token_length
+        self.cumulated_block_sizes_path = self.partition_path + "/cumulated_block_sizes.npy"
 
         os.makedirs(self.partition_path, exist_ok=True)
         cache_path = os.path.split(self.cbor_path)[0]
@@ -80,10 +81,14 @@ class WikipediaCBOR(Dataset):
 
         if os.path.isfile(key_file) and not clean_cache:
             with open(key_file, "rb") as pickle_cache:
-                # NOTE: total freqs were not saved
                 self.offsets, self.key_titles, self.key_encoder, \
                     self.valid_keys, self.chosen_freqs = pickle.load(
                         pickle_cache)
+
+            # TODO: should I merge these 2 caches?
+            with open(self.cumulated_block_sizes_path, "rb") as fp:
+                self.cumulated_block_size = np.load(fp)
+
             tqdm.tqdm.write("Loaded from cache")
         else:
             tqdm.tqdm.write("Generating key cache")
@@ -98,7 +103,7 @@ class WikipediaCBOR(Dataset):
             self.key_encoder["PAD"] = 0  # useful for batch transforming stuff
 
             self.valid_keys = set(self.key_encoder.values())
-            self.preprocess(page_lim, override=True)
+            self.preprocess(page_lim)
             freqs = self.count_frequency()
 
             tqdm.tqdm.write("Obtained link frequency, sorting...")
@@ -151,8 +156,7 @@ class WikipediaCBOR(Dataset):
 
                 return cbor_file.read(first_elem_len).decode('utf-8')
 
-            else:
-                raise Exception("Wrong header")
+            raise Exception("Wrong header")
 
         key_titles = set()
 
@@ -165,10 +169,10 @@ class WikipediaCBOR(Dataset):
         return key_titles
 
     def __len__(self):
-        # TODO: change this into the number of blocks
-        return len(self.offsets)
+        return self.cumulated_block_size[-1]
 
-    def get_attention_mask(self, tokens: List[int], dropout_rate=0.2):
+    @staticmethod
+    def get_attention_mask(tokens: List[int], dropout_rate=0.2):
         """
         Get an attention mask. Padding tokens are automatically masked out.
         The others have a probability of being masked given by p.
@@ -244,7 +248,15 @@ class WikipediaCBOR(Dataset):
 
         return {"text": page_content.getvalue(), "link_mentions": links}
 
-    def preprocess(self, limit=-1, override=False):
+    def preprocess(self, limit=-1):
+        """
+        Transform the CBOR file into a rust-cerealised version that is already tokenized
+        and ready for use.
+
+        :param limit if -1 process the whole Wikipedia, otherwise process only the first
+        `limit` pages.
+        """
+
         rust_cbor_path = self.partition_path + "/test_rust.cbor"
         rust_cereal_path = self.partition_path + "/test_rust.cereal"
         rust_cbor_offsets = rust_cbor_path + ".offsets"
@@ -252,7 +264,7 @@ class WikipediaCBOR(Dataset):
         if limit == -1:
             limit = len(self)
 
-        if not os.path.exists(rust_cbor_path) or override:
+        if not os.path.exists(rust_cbor_path):
             with open(rust_cbor_path, "wb") as fp:
                 offsets = []
 
@@ -285,9 +297,9 @@ class WikipediaCBOR(Dataset):
         blocks_per_page = tokenizer_cereal.tokenize_from_cbor_list(
             rust_cbor_path, rust_cereal_path, offsets, self.token_length)
 
-        with open(self.partition_path + "/cumulated_block_sizes.npy", "wb") as fp:
-            cumulated = np.cumsum(blocks_per_page)
-            np.save(fp, cumulated)
+        with open(self.cumulated_block_sizes_path, "wb") as fp:
+            self.cumulated_block_size = np.cumsum(blocks_per_page)
+            np.save(fp, self.cumulated_block_size)
 
     def count_frequency(self) -> Dict[int, int]:
         """
@@ -316,9 +328,7 @@ class WikipediaCBOR(Dataset):
 
         slice_file = self.partition_path + "/test_rust.cereal"
 
-        with open(self.partition_path + "/cumulated_block_sizes.npy", "rb") as fp:
-            cumulated = np.load(fp)
-
+        cumulated = self.cumulated_block_size
         page_idx = bisect.bisect_right(cumulated, idx)
         page_block_nums = cumulated[page_idx] - \
             (cumulated[page_idx-1] if page_idx > 0 else 0)
@@ -357,7 +367,7 @@ class BIO:
     Load and process the GBK corpus
     """
 
-    def __init__(self, dataset_dir, token_length, ):
+    def __init__(self, dataset_dir, token_length):
         self.token_length = token_length
         # Download tokenizer from S3 and cache.
         self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
@@ -405,11 +415,11 @@ class BIO:
         # Tensorize...
         # pylint:disable=not-callable
         self.input_ids = torch.tensor(
-            self.input_ids)  
+            self.input_ids)
         self.labels = torch.tensor(self.labels)  # pylint:disable=not-callable
         # pylint:disable=not-callable
         self.attention_mask = torch.tensor(
-            self.attention_mask)  
+            self.attention_mask)
 
     def __load_dataset(self, dataset_dir):
         """
