@@ -102,6 +102,7 @@ class WikipediaCBOR(Dataset):
             self.key_encoder = dict(zip(self.key_titles, itertools.count()))
             self.key_encoder["PAD"] = 0  # useful for batch transforming stuff
 
+            # preprocess and find the top k unique wikipedia links
             self.valid_keys = set(self.key_encoder.values())
             self.preprocess(page_lim)
             freqs = self.count_frequency()
@@ -115,9 +116,6 @@ class WikipediaCBOR(Dataset):
                 self.cutoff_frequency * len(freqs_as_pair))]
             self.chosen_freqs = set(map(lambda x: x[1], self.chosen_freqs))
 
-            # self.key_decoder = dict(zip(self.key_encoder.keys(), self.key_encoder.values()))
-
-            # preprocess and find the top k unique wikipedia links
             with open(key_file, "wb") as pickle_cache:
                 pickle.dump((self.offsets, self.key_titles, self.key_encoder,
                              self.valid_keys, self.chosen_freqs), pickle_cache)
@@ -259,39 +257,25 @@ class WikipediaCBOR(Dataset):
 
         rust_cbor_path = self.partition_path + "/test_rust.cbor"
         rust_cereal_path = self.partition_path + "/test_rust.cereal"
-        rust_cbor_offsets = rust_cbor_path + ".offsets"
 
         if limit == -1:
             limit = len(self)
 
-        if not os.path.exists(rust_cbor_path):
-            with open(rust_cbor_path, "wb") as fp:
-                offsets = []
+        with open(rust_cbor_path, "wb") as fp:
+            offsets = []
 
-                with open(self.cbor_path, "rb") as cbor_fp:
-                    for i, page in enumerate(tqdm.tqdm(read_data.iter_annotations(cbor_fp),
-                                                       total=limit)):
-                        if i >= limit:
-                            break
+            with open(self.cbor_path, "rb") as cbor_fp:
+                for i, page in enumerate(tqdm.tqdm(read_data.iter_annotations(cbor_fp),
+                                                    total=limit)):
+                    if i >= limit:
+                        break
 
-                        offsets.append(fp.tell())
+                    offsets.append(fp.tell())
+                    parsed = self.preprocess_page(page)
 
-                        parsed = self.preprocess_page(page)
-
-                        # enforce this key order
-                        parsed = {"id": i, **parsed}
-
-                        cbor.dump(parsed, fp)
-
-            # rust doesn't know how to convert from numpy to python
-            # make its life easier by using native lists
-            with open(rust_cbor_offsets, "wb") as offsets_fp:
-                pickle.dump(offsets, offsets_fp)
-        else:
-            with open(rust_cbor_offsets, "rb") as offsets_fp:
-                offsets = pickle.load(offsets_fp)
-
-        # print(offsets)
+                    # enforce this key order
+                    parsed = {"id": i, **parsed}
+                    cbor.dump(parsed, fp)
 
         # save cumulated block sizes
         blocks_per_page = tokenizer_cereal.tokenize_from_cbor_list(
@@ -313,7 +297,7 @@ class WikipediaCBOR(Dataset):
         """
         Return a tensor with the given batches. The shape of a batch is
         (b x 3 x MAX_LEN).
-        
+
         The first row is the token embedding via WordPiece ids.
         The second row is the BERT attention mask.
         The third row is the expected Entity Linking output.
