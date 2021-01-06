@@ -73,7 +73,7 @@ macro_rules! cast_errors {
             fn $func( py: Python, $param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
                 match [<$func _helper>] (py, $param1 $(, $param)*) {
                     Ok(result) => Ok(result),
-                    Err(e) => Err(exceptions::PyTypeError::new_err(e.to_string()))
+                    Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
                 }
             }
         }
@@ -155,10 +155,10 @@ fn tokenize_from_cbor_list_helper(
 
     drop(pb);
 
-    return write_slices(output_path, page_outputs, block_size);
+    write_slices(output_path, &page_outputs, block_size)
 }
 
-fn write_slices(output_file: &str, page_outputs: Vec<PageFormatOutput>, block_size: u32) -> anyhow::Result<Vec<u32>> {
+fn write_slices(output_file: &str, page_outputs: &Vec<PageFormatOutput>, block_size: u32) -> anyhow::Result<Vec<u32>> {
     let output_file_tocs = output_file.to_owned() + ".toc";
     let mut output_file_stream = File::create(output_file)?;
     let output_file_tocs_stream = File::create(output_file_tocs)?;
@@ -168,14 +168,11 @@ fn write_slices(output_file: &str, page_outputs: Vec<PageFormatOutput>, block_si
     let mut offsets: Vec<u64> = page_outputs
         .iter()
         .scan(0 as usize, |prev_offset, page_output| {
-
-            //wrap_cereal_error!(cereal::write_slice(&mut buf, &[page_output]))
-            //    .unwrap();
-            
             let size = bincode::serialized_size(&page_output).unwrap() as usize;
 
-            bincode::serialize_into(&output_file_stream, &page_output)
-                .unwrap();
+            // serialize_into gives endianness issues apparently
+            let buf = bincode::serialize(&page_output).unwrap();
+            output_file_stream.write(buf.as_slice()).unwrap();
 
             let old_offset = *prev_offset;
             *prev_offset += size;
@@ -278,7 +275,7 @@ fn count_frequency_helper(
         let mut buf: Vec<u8> = vec![0; (offset_end - offset_start) as usize];
         slice.read_exact(buf.as_mut_slice())?;
 
-        let parsed: PageFormatOutput = serde_cbor::from_slice(&buf)?;
+        let parsed: PageFormatOutput = bincode::deserialize(&buf)?;
         for x in parsed.link_embedding {
             let counter = book_reviews.entry(x).or_insert(0);
             *counter += 1;

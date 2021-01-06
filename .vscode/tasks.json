@@ -1,0 +1,33 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "cargo",
+			"subcommand": "build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "Rust: cargo build - tokenizer_cereal"
+		},
+		{
+			"label": "Launch maturin",
+			"type": "shell",
+			"command": ["source ~/.pyenv/versions/colla/bin/activate; cd ${workspaceFolder}/notebooks/3rdparty/tokenizer_cereal; maturin develop"],
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Launch maturin (release build)",
+			"type": "shell",
+			"command": ["source ~/.pyenv/versions/colla/bin/activate; cd ${workspaceFolder}/notebooks/3rdparty/tokenizer_cereal; maturin develop --release"],
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		}
+	
+	]
+}
