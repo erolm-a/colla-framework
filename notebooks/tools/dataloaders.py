@@ -28,7 +28,7 @@ from torch.utils.data import Dataset, TensorDataset
 import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
-from .dumps import wrap_open, get_filename_path
+from .dumps import wrap_open, get_filename_path, is_file
 
 
 def b2i(number_as_bytes: bytes):
@@ -56,7 +56,7 @@ class WikipediaCBOR(Dataset):
                  partition_path: str,
                  cutoff_frequency=0.86,
                  page_lim=-1,
-                 token_length=768,
+                 token_length=128,
                  clean_cache=False,
                  ):
         """
@@ -278,8 +278,10 @@ class WikipediaCBOR(Dataset):
                     cbor.dump(parsed, fp)
 
         # save cumulated block sizes
-        blocks_per_page = tokenizer_cereal.tokenize_from_cbor_list(
-            rust_cbor_path, rust_cereal_path, offsets, self.token_length)
+        lengths_per_page = tokenizer_cereal.tokenize_from_cbor_list(
+            rust_cbor_path, rust_cereal_path, offsets)
+        
+        blocks_per_page = [int(np.floor(length / self.token_length)) for length in lengths_per_page]
 
         with open(self.cumulated_block_sizes_path, "wb") as fp:
             self.cumulated_block_size = np.cumsum(blocks_per_page)
@@ -405,16 +407,20 @@ class BIO:
         self.attention_mask = torch.tensor(
             self.attention_mask)
 
-    def __load_dataset(self, dataset_dir):
+    def __load_dataset(self, dataset_path):
         """
         Load the dataset
+
+        :param dataset_dir the relative path where the dataset is.
         """
+
         names = []
-        with wrap_open("ner.csv", "r", encoding="latin1") as f:
+
+        with wrap_open(dataset_path, "r", encoding="latin1") as f:
             names = ["index"] + f.readline().strip().split(",")[1:]
             names = names + list(range(34 - len(names)))
 
-        with wrap_open("ner.csv", "rb") as f:
+        with wrap_open(dataset_path, "rb") as f:
             f.readline()  # skip the first line
             data = pd.read_csv(f, encoding="latin1", names=names) \
                 .fillna(method="ffill")
@@ -459,7 +465,7 @@ class BIO:
         labels = []
 
         for word, label in zip(sentence, text_labels):
-            tokenized_word = self.tokenizer.extract_links_only(word)
+            tokenized_word = self.tokenizer.tokenize(word)
             n_subwords = len(tokenized_word)
 
             tokenized_sentence.extend(tokenized_word)

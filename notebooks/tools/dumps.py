@@ -14,7 +14,7 @@ from .strings import strip_prefix
 DATA_FOLDER = os.environ.get("COLLA_DATA_FOLDER", os.path.join(os.getcwd(), "data"))
 
 
-def get_filename_path(filename) -> str:
+def get_filename_path(filename: str) -> str:
     """
     Prefix a filename with the DATA_FOLDER.
     Also create all the base folders.
@@ -25,7 +25,7 @@ def get_filename_path(filename) -> str:
 
     return filename
 
-def wrap_open(filename, *args, **kwargs):
+def wrap_open(filename: str, *args, **kwargs):
     """Wrapper to python's open() that prepends DATA_FOLDER.
     
     If a user provides a open-shaped `handler` as kwarg it will be used
@@ -42,7 +42,7 @@ def wrap_open(filename, *args, **kwargs):
     return handler(path, *args, **kwargs)
 
 
-def is_file(filename) -> bool:
+def is_file(filename: str) -> bool:
     """Wrapper for os.path.isfile that automatically prefixes a filename"""
     return os.path.isfile(get_filename_path(filename))
 

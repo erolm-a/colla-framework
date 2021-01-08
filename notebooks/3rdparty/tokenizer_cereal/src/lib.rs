@@ -65,11 +65,13 @@ macro_rules! simple_error_lined {
     };
 }
 
-/// Automatically cast any form of error into a type error.
+/// This macro is an absolute hack that arises from my very poor knowledge of macros and my laziness.
+/// Automatically cast any form of error into a type error. Also add python-style documentation.
 macro_rules! cast_errors {
-    ($func:ident ( $param1:ident : $t1:ty $(, $param:ident : $t:ty )*) -> $resType:ty) => {
+    ($func:ident ( $param1:ident : $t1:ty $(, $param:ident : $t:ty )*) -> $resType:ty, $doc:literal) => {
         paste! {
             #[pyfunction]
+            #[doc=$doc]
             fn $func( py: Python, $param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
                 match [<$func _helper>] (py, $param1 $(, $param)*) {
                     Ok(result) => Ok(result),
@@ -89,9 +91,31 @@ fn tokenizer_cereal(_py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
-cast_errors!(tokenize_from_cbor_list(cbor_path: &str, ouput_path: &str, offset_list: Vec<u64>, block_size: u32 ) -> Vec<u32> );
-cast_errors!(get_token_slice(cbor_path: &str, idx: usize, block_size: usize, content_block_idx: usize) -> (Vec<u32>, Vec<u32>));
-cast_errors!(count_frequency(cereal_path: &str) -> HashMap<u32, u32>);
+cast_errors!(tokenize_from_cbor_list(cbor_path: &str, ouput_path: &str, offset_list: Vec<u64>) -> Vec<u32>,
+"Tokenize a given slice. We try to ensure that 
+:param cbor_path the path of the cbor file
+:param output_path the serialized output path
+:param offset_list the list of the offsets of every article in the given cbor
+       file.
+:retuns a vector with all the article lengths.");
+
+cast_errors!(get_token_slice(cereal_path: &str, idx: usize, block_size: usize,
+                                    content_block_idx: usize) -> (Vec<u32>, Vec<u32>),
+"Get a choen slice batch from a tokenized slice file.
+
+:param cereal_path the path of the serialized tokens file.
+:param idx the index of the article to use according to the previously generated
+       TOC (whose path is cereal_path + \".toc\").
+:param block_size the size of the blocks
+:param content_block_idx the block idx. The resulting block may have a smaller
+       size than the prescribed block size (true for last blocks).
+:returns a pair of vectors: text tokens and link link target output.");
+
+cast_errors!(count_frequency(cereal_path: &str) -> HashMap<u32, u32>,
+"Count the frequency of a tokenized slice file.
+
+:param cereal_path the path of the serialized tokens file.
+:return a frequency count dictionary. The keys are link ids and the values are the frequency count.");
 
 
 fn tokenize_from_cbor_list_helper(
@@ -99,7 +123,6 @@ fn tokenize_from_cbor_list_helper(
     cbor_path: &str,
     output_path: &str,
     offset_list: Vec<u64>,
-    block_size: u32
 ) -> anyhow::Result<Vec<u32>> {
     let mut offset_list = offset_list.clone();
     // try to open the given cbor file
@@ -120,9 +143,17 @@ fn tokenize_from_cbor_list_helper(
 
     offset_list.push(file_length);
 
-    let mut page_outputs = vec![];
 
     let pb = ProgressBar::new(offset_list.len() as u64);
+
+    // the number of articles to write at a time
+    let buffer_size = 100;
+    let mut page_outputs = vec![];
+    let mut lengths = vec![];
+    let mut offsets = vec![];
+
+    let mut output_file_stream = File::create(output_path)?;
+    let output_file_tocs_stream = File::create(output_path.to_owned() + ".toc")?;
 
     for (offset_start, offset_end) in offset_list.into_iter().tuple_windows() {
         let mut slice: Vec<u8> = vec![0; (offset_end - offset_start) as usize];
@@ -138,8 +169,6 @@ fn tokenize_from_cbor_list_helper(
         let encoding_toks_offsets = encoding.get_offsets();
         let encoding_ids = encoding.get_ids();
 
-        // TODO: it is not guaranteed that the link offsets won't change after normalization
-
         let link_embedding = extract_link_mask(encoding_toks_offsets, &current_slice.link_mentions);
 
         let page_output = PageFormatOutput {
@@ -149,25 +178,35 @@ fn tokenize_from_cbor_list_helper(
         };
 
         page_outputs.push(page_output);
+        if page_outputs.len() >= buffer_size {
+            write_slices(&mut output_file_stream, &page_outputs,
+                         &mut lengths, &mut offsets)?;
+            page_outputs.clear();
+        }
 
         pb.inc(1);
     }
 
-    drop(pb);
+    // final flush
+    if page_outputs.len() > 0 {
+        write_slices(&mut output_file_stream, &page_outputs,
+                     &mut lengths, &mut offsets)?;
+    }
 
-    write_slices(output_path, &page_outputs, block_size)
+    offsets.push(output_file_stream.seek(SeekFrom::End(0))?.to_owned() as usize);
+    bincode::serialize_into(output_file_tocs_stream, &offsets)?;
+ 
+    Ok(lengths)
 }
 
-fn write_slices(output_file: &str, page_outputs: &Vec<PageFormatOutput>, block_size: u32) -> anyhow::Result<Vec<u32>> {
-    let output_file_tocs = output_file.to_owned() + ".toc";
-    let mut output_file_stream = File::create(output_file)?;
-    let output_file_tocs_stream = File::create(output_file_tocs)?;
-
+// fn write_slices(output_file: &str, page_outputs: &Vec<PageFormatOutput>, block_size: u32) -> anyhow::Result<Vec<u32>> {
+fn write_slices<T: Write + Seek>(
+    output_file_stream: &mut T, page_outputs: &Vec<PageFormatOutput>,
+    lenghts: &mut Vec<u32>, offsets: &mut Vec<usize>)-> anyhow::Result<()> {
     let pb = ProgressBar::new(page_outputs.len() as u64);
 
-    let mut offsets: Vec<u64> = page_outputs
-        .iter()
-        .scan(0 as usize, |prev_offset, page_output| {
+    offsets.extend(page_outputs.iter().scan(
+        *lenghts.last().unwrap_or(&0) as usize, |prev_offset, page_output| {
             let size = bincode::serialized_size(&page_output).unwrap() as usize;
 
             // serialize_into gives endianness issues apparently
@@ -179,22 +218,23 @@ fn write_slices(output_file: &str, page_outputs: &Vec<PageFormatOutput>, block_s
 
             pb.inc(1);
 
-            Some(old_offset as u64)
-        })
-        .collect();
+            Some(old_offset)
+        }
+    ));
 
     let blocks: Vec<u32> = page_outputs
         .into_iter()
-        .map(|page_output| (page_output.tokens.len() as f32 / block_size as f32).floor() as u32)
+        .map(|page_output| page_output.tokens.len() as u32)
         .collect();
+
     // push EOF position - will make some calculations easier this way
-    offsets.push(output_file_stream.seek(SeekFrom::End(0))?.to_owned());
+    // offsets.push(output_file_stream.seek(SeekFrom::End(0))?.to_owned());
     // output_file_tocs_stream.write_all(offsets.as_slice())?;
-    bincode::serialize_into(output_file_tocs_stream, &offsets)?;
-    Ok(blocks)
+    // bincode::serialize_into(output_file_tocs_stream, &offsets)?;
+    lenghts.extend(blocks);
+    Ok(())
 }
 
-/// Get a chosen slice batch from a tokenized slice file
 fn get_token_slice_helper(
     _py: Python,
     slice_file: &str,
@@ -203,8 +243,8 @@ fn get_token_slice_helper(
     context_block_size: usize,
 ) -> anyhow::Result<(Vec<u32>, Vec<u32>)> {
     let mut input_file = File::open(slice_file)?;
+    // FIXME: we are opening and deserializing this file every time! Can we avoid this?
     let toc_file = File::open(slice_file.to_owned() + ".toc")?;
-
     let slices: Vec<u64> = bincode::deserialize_from(toc_file)?;
 
     input_file.seek(SeekFrom::Start(slices[idx]))?;
