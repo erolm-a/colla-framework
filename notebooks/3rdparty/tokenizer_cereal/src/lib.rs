@@ -1,4 +1,3 @@
-extern crate serde_cbor;
 extern crate bincode;
 extern crate tokenizers;
 
@@ -35,7 +34,6 @@ use paste::paste;
 
 use indicatif::ProgressBar;
 
-#[derive(Deserialize)]
 #[derive(FromPyObject)]
 struct PageFormat {
     // a page identifier
@@ -81,18 +79,6 @@ macro_rules! cast_errors {
             }
         }
     };
-    ($func:ident ( $param1:ident : $t1:ty $(, $param:ident : $t:ty )*) -> $resType:ty, $doc:literal NO_PYFUNCTION) => {
-        paste! {
-            #[doc=$doc]
-            fn $func( py: Python, $param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
-                match [<$func _helper>] (py, $param1 $(, $param)*) {
-                    Ok(result) => Ok(result),
-                    Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
-                }
-            }
-        }
-    };
-
 }
 
 
@@ -164,7 +150,7 @@ fn tokenize_from_iterator_helper(
     let output_file_tocs_stream = File::create(output_path.to_owned() + ".toc")?;
 
     let mut lengths = vec![];
-    let mut offsets = vec![];
+    let mut offsets = vec![0];
 
     for chunk in &iterator.iter()?.take(estimated_len as usize)
                                   .map(|i| i.and_then(PyAny::extract::<PageFormat>))
@@ -197,7 +183,6 @@ fn tokenize_from_iterator_helper(
                      &mut lengths, &mut offsets)?;
     }
 
-    offsets.push(output_file_stream.seek(SeekFrom::End(0))?.to_owned() as usize);
     bincode::serialize_into(output_file_tocs_stream, &offsets)?;
  
     Ok(lengths)
@@ -210,19 +195,18 @@ fn write_slices<T: Write + Seek>(
     let pb = ProgressBar::new(page_outputs.len() as u64);
 
     offsets.extend(page_outputs.iter().scan(
-        *lenghts.last().unwrap_or(&0) as usize, |prev_offset, page_output| {
+        *offsets.last().unwrap(), |offset, page_output| {
             let size = bincode::serialized_size(&page_output).unwrap() as usize;
 
             // serialize_into gives endianness issues apparently
             let buf = bincode::serialize(&page_output).unwrap();
             output_file_stream.write(buf.as_slice()).unwrap();
 
-            let old_offset = *prev_offset;
-            *prev_offset += size;
+            *offset += size;
 
             pb.inc(1);
 
-            Some(old_offset)
+            Some(*offset)
         }
     ));
 
@@ -311,12 +295,12 @@ fn count_frequency_helper(
 ) -> anyhow::Result<HashMap<u32, u32>> {
     let mut slice = File::open(cereal_path)?;
     let toc_file = File::open(cereal_path.to_owned() + ".toc")?;
-    let slice_offsets: Vec<u64> = bincode::deserialize_from(toc_file)?;
+    let slice_offsets: Vec<usize> = bincode::deserialize_from(toc_file)?;
 
     let mut book_reviews = HashMap::new();
 
     for (offset_start, offset_end) in slice_offsets.into_iter().tuple_windows() {
-        let mut buf: Vec<u8> = vec![0; (offset_end - offset_start) as usize];
+        let mut buf: Vec<u8> = vec![0; offset_end - offset_start];
         slice.read_exact(buf.as_mut_slice())?;
 
         let parsed: PageFormatOutput = bincode::deserialize(&buf)?;
