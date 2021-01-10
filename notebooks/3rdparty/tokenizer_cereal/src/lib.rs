@@ -166,31 +166,32 @@ fn tokenize_from_iterator_helper(
     let mut lengths = vec![];
     let mut offsets = vec![];
 
-    for chunk in &iterator.iter()?.map(|i| i.and_then(PyAny::extract::<PageFormat>)).chunks(BUFFER_SIZE) {
-        let mut page_outputs = vec![];
+    for chunk in &iterator.iter()?.take(estimated_len as usize)
+                                  .map(|i| i.and_then(PyAny::extract::<PageFormat>))
+                                  .chunks(BUFFER_SIZE) {
+        
+        let page_inputs: Vec<PageFormat> = chunk.map(|page_output| page_output.unwrap()).collect();
 
-        for current_slice in chunk {
-            let current_slice = current_slice?;
-            let encoding = tokenizer
-                .encode(EncodeInput::Single(current_slice.text), false)
-                .map_err(|e| simple_error_lined!(e))?;
+        let inputs = page_inputs.as_slice().iter().map(|x| EncodeInput::Single(x.text.to_owned())).collect();
 
+        let encodings = tokenizer.encode_batch(inputs, false)
+                                 .map_err(|e| simple_error_lined!(e))?;
+
+        let page_outputs : Vec<PageFormatOutput> = encodings.iter().zip(page_inputs.iter()).map(|(encoding, page_input)| {
             let encoding_toks_offsets = encoding.get_offsets();
             let encoding_ids = encoding.get_ids();
 
-            let link_embedding = extract_link_mask(encoding_toks_offsets, &current_slice.link_mentions);
-
-            let page_output = PageFormatOutput {
-                id: current_slice.id,
-                tokens: encoding_ids.to_vec(),
-                link_embedding,
-            };
-
-            page_outputs.push(page_output);
+            let link_embedding = extract_link_mask(encoding_toks_offsets, &page_input.link_mentions);
 
             pb.inc(1);
-        }
 
+            PageFormatOutput {
+                id: page_input.id,
+                tokens: encoding_ids.to_vec(),
+                link_embedding,
+            }
+        }).collect();
+        
 
         write_slices(&mut output_file_stream, &page_outputs,
                      &mut lengths, &mut offsets)?;
