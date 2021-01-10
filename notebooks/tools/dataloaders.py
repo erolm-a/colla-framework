@@ -54,11 +54,12 @@ class WikipediaCBOR(Dataset):
     def __init__(self,
                  cbor_path: str,
                  partition_path: str,
-                 cutoff_frequency=0.86,
+                 cutoff_frequency=0.03,
                  page_lim=-1,
                  token_length=128,
                  clean_cache=False,
-                 re_preprocess=False,
+                 repreprocess=False,
+                 recount=False,
                  ):
         """
         :param cbor_path the relative path of the wikipedia cbor export
@@ -68,8 +69,9 @@ class WikipediaCBOR(Dataset):
         Ties will be broken randomly.
         :param page_lim the number of pages in a partition
         :param token_length return only the first `token_length` tokens of a page.
-        :param clean_cache delete the old cache. Implies re_preprocess
-        :param re_preprocess preprocess the text
+        :param clean_cache delete the old cache. Implies repreprocess and recount
+        :param repreprocess preprocess the text. Implies recount
+        :param recount recount the frequencies and update the top-k common entity list.
         """
         self.cbor_path = get_filename_path(cbor_path)
         self.partition_path = get_filename_path(partition_path)
@@ -107,10 +109,11 @@ class WikipediaCBOR(Dataset):
             # preprocess and find the top k unique wikipedia links
             self.valid_keys = set(self.key_encoder.values())
 
-        if clean_cache or re_preprocess:
+        if clean_cache or repreprocess:
             self.preprocess(page_lim)
+            
+        if clean_cache or repreprocess or recount:
             freqs = self.count_frequency()
-
             tqdm.tqdm.write("Obtained link frequency, sorting...")
             freqs_as_pair = list(zip(freqs.values(), freqs.keys()))
             tqdm.tqdm.write("Sorted, filtering the most common links...")
@@ -310,8 +313,7 @@ class WikipediaCBOR(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor]:
         """
-        Return a tensor with the given batches. The shape of a batch is
-        (b x 3 x MAX_LEN).
+        Return a tensor for the given index.
 
         The first row is the token embedding via WordPiece ids.
         The second row is the BERT attention mask.
@@ -351,9 +353,6 @@ class WikipediaCBOR(Dataset):
 
         attns = self.get_attention_mask(toks)
 
-        # TODO: possibly change the float format to float16...
-        # Does the change happen when moving to GPU?
-        # Need to investigate this...
         toks_list = torch.LongTensor(toks).squeeze()
         attns_list = torch.FloatTensor(attns).squeeze()
         links_list = torch.LongTensor(links).squeeze()
