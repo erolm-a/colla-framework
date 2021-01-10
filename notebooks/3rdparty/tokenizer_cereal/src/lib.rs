@@ -115,6 +115,7 @@ cast_errors!(get_token_slice(cereal_path: &str, idx: usize, block_size: usize,
        size than the prescribed block size (true for last blocks).\n
 :returns a pair of vectors: text tokens and link link target output.");
 
+
 cast_errors!(count_frequency(cereal_path: &str) -> HashMap<u32, u32>,
 "Count the frequency of a tokenized slice file.\n
 \n
@@ -156,7 +157,8 @@ fn tokenize_from_iterator_helper(
                                   .map(|i| i.and_then(PyAny::extract::<PageFormat>))
                                   .chunks(BUFFER_SIZE) {
         
-        let page_inputs: Vec<PageFormat> = chunk.map(|page_output| page_output.unwrap()).collect();
+        // NOTE: Failing pages are silently ignored.
+        let page_inputs: Vec<PageFormat> = chunk.filter_map(|page_output| page_output.ok()).collect();
 
         let inputs = page_inputs.as_slice().iter().map(|x| EncodeInput::Single(x.text.to_owned())).collect();
 
@@ -195,10 +197,10 @@ fn write_slices<T: Write + Seek>(
     let pb = ProgressBar::new(page_outputs.len() as u64);
 
     offsets.extend(page_outputs.iter().scan(
+        // offsets always starts with a 0
         *offsets.last().unwrap(), |offset, page_output| {
             let size = bincode::serialized_size(&page_output).unwrap() as usize;
 
-            // serialize_into gives endianness issues apparently
             let buf = bincode::serialize(&page_output).unwrap();
             output_file_stream.write(buf.as_slice()).unwrap();
 
