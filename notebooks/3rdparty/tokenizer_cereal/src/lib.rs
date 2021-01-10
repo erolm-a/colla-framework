@@ -36,6 +36,7 @@ use paste::paste;
 use indicatif::ProgressBar;
 
 #[derive(Deserialize)]
+#[derive(FromPyObject)]
 struct PageFormat {
     // a page identifier
     id: u32,
@@ -80,53 +81,67 @@ macro_rules! cast_errors {
             }
         }
     };
+    ($func:ident ( $param1:ident : $t1:ty $(, $param:ident : $t:ty )*) -> $resType:ty, $doc:literal NO_PYFUNCTION) => {
+        paste! {
+            #[doc=$doc]
+            fn $func( py: Python, $param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
+                match [<$func _helper>] (py, $param1 $(, $param)*) {
+                    Ok(result) => Ok(result),
+                    Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
+                }
+            }
+        }
+    };
+
 }
 
+
+/// This module provides some convenience functions for tokenizing and accessing tokenized
+/// Wikipedia pages, along with correct output spans.
 #[pymodule]
 fn tokenizer_cereal(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(tokenize_from_cbor_list, m)?)?;
+    m.add_function(wrap_pyfunction!(tokenize_from_iterator, m)?)?;
     m.add_function(wrap_pyfunction!(get_token_slice, m)?)?;
     m.add_function(wrap_pyfunction!(count_frequency, m)?)?;
 
     Ok(())
 }
 
-cast_errors!(tokenize_from_cbor_list(cbor_path: &str, ouput_path: &str, offset_list: Vec<u64>) -> Vec<u32>,
-"Tokenize a given slice. We try to ensure that 
-:param cbor_path the path of the cbor file
-:param output_path the serialized output path
-:param offset_list the list of the offsets of every article in the given cbor
-       file.
+cast_errors!(tokenize_from_iterator(generator: &PyAny, output_path: &str, estimated_len: u64) -> Vec<u32>,
+"Tokenize from a generator.\n
+:param dictionary_generator a Python generator that generates a PageFormat (see lib.rs for details)\n
+:param output_path the serialized output path\n
+:param estimated_len if provided as -1 do not show a progress bar. Else the
+       progress bar will assume that there are estimated_len elements to
+       process.
 :retuns a vector with all the article lengths.");
+
 
 cast_errors!(get_token_slice(cereal_path: &str, idx: usize, block_size: usize,
                                     content_block_idx: usize) -> (Vec<u32>, Vec<u32>),
-"Get a choen slice batch from a tokenized slice file.
+"Get a choen slice batch from a tokenized slice file.\n
 
-:param cereal_path the path of the serialized tokens file.
-:param idx the index of the article to use according to the previously generated
-       TOC (whose path is cereal_path + \".toc\").
-:param block_size the size of the blocks
-:param content_block_idx the block idx. The resulting block may have a smaller
-       size than the prescribed block size (true for last blocks).
+:param cereal_path the path of the serialized tokens file.\n
+:param idx the index of the article to use according to the previously generated\n
+       TOC (whose path is cereal_path + \".toc\").\n
+:param block_size the size of the blocks\n
+:param content_block_idx the block idx. The resulting block may have a smaller\n
+       size than the prescribed block size (true for last blocks).\n
 :returns a pair of vectors: text tokens and link link target output.");
 
 cast_errors!(count_frequency(cereal_path: &str) -> HashMap<u32, u32>,
-"Count the frequency of a tokenized slice file.
-
-:param cereal_path the path of the serialized tokens file.
+"Count the frequency of a tokenized slice file.\n
+\n
+:param cereal_path the path of the serialized tokens file.\n
 :return a frequency count dictionary. The keys are link ids and the values are the frequency count.");
 
 
-fn tokenize_from_cbor_list_helper(
+fn tokenize_from_iterator_helper(
     _py: Python,
-    cbor_path: &str,
+    iterator: &PyAny,
     output_path: &str,
-    offset_list: Vec<u64>,
+    estimated_len: u64
 ) -> anyhow::Result<Vec<u32>> {
-    let mut offset_list = offset_list.clone();
-    // try to open the given cbor file
-    let mut cbor_file = File::open(cbor_path)?;
 
     let wordpiece = WordPiece::from_files("vocab.txt") // TODO: move this somewhere else
         .unk_token("[UNK]".into())
@@ -138,57 +153,45 @@ fn tokenize_from_cbor_list_helper(
     tokenizer.with_normalizer(Box::new(BertNormalizer::new(true, false, true, true)));
     tokenizer.with_pre_tokenizer(Box::new(BertPreTokenizer));
 
-    let file_length = cbor_file.seek(SeekFrom::End(0))?;
-    cbor_file.seek(SeekFrom::Start(0))?;
-
-    offset_list.push(file_length);
-
-
-    let pb = ProgressBar::new(offset_list.len() as u64);
 
     // the number of articles to write at a time
-    let buffer_size = 100;
-    let mut page_outputs = vec![];
-    let mut lengths = vec![];
-    let mut offsets = vec![];
+    const BUFFER_SIZE : usize = 100;
+
+    // TODO: what happens when passing -1?
+    let pb = ProgressBar::new(estimated_len);
 
     let mut output_file_stream = File::create(output_path)?;
     let output_file_tocs_stream = File::create(output_path.to_owned() + ".toc")?;
 
-    for (offset_start, offset_end) in offset_list.into_iter().tuple_windows() {
-        let mut slice: Vec<u8> = vec![0; (offset_end - offset_start) as usize];
+    let mut lengths = vec![];
+    let mut offsets = vec![];
 
-        cbor_file.read_exact(&mut slice).unwrap();
+    for chunk in &iterator.iter()?.map(|i| i.and_then(PyAny::extract::<PageFormat>)).chunks(BUFFER_SIZE) {
+        let mut page_outputs = vec![];
 
-        let current_slice: PageFormat = serde_cbor::from_slice(&slice)?;
+        for current_slice in chunk {
+            let current_slice = current_slice?;
+            let encoding = tokenizer
+                .encode(EncodeInput::Single(current_slice.text), false)
+                .map_err(|e| simple_error_lined!(e))?;
 
-        let encoding = tokenizer
-            .encode(EncodeInput::Single(current_slice.text), false)
-            .map_err(|e| simple_error_lined!(e))?;
+            let encoding_toks_offsets = encoding.get_offsets();
+            let encoding_ids = encoding.get_ids();
 
-        let encoding_toks_offsets = encoding.get_offsets();
-        let encoding_ids = encoding.get_ids();
+            let link_embedding = extract_link_mask(encoding_toks_offsets, &current_slice.link_mentions);
 
-        let link_embedding = extract_link_mask(encoding_toks_offsets, &current_slice.link_mentions);
+            let page_output = PageFormatOutput {
+                id: current_slice.id,
+                tokens: encoding_ids.to_vec(),
+                link_embedding,
+            };
 
-        let page_output = PageFormatOutput {
-            id: current_slice.id,
-            tokens: encoding_ids.to_vec(),
-            link_embedding,
-        };
+            page_outputs.push(page_output);
 
-        page_outputs.push(page_output);
-        if page_outputs.len() >= buffer_size {
-            write_slices(&mut output_file_stream, &page_outputs,
-                         &mut lengths, &mut offsets)?;
-            page_outputs.clear();
+            pb.inc(1);
         }
 
-        pb.inc(1);
-    }
 
-    // final flush
-    if page_outputs.len() > 0 {
         write_slices(&mut output_file_stream, &page_outputs,
                      &mut lengths, &mut offsets)?;
     }

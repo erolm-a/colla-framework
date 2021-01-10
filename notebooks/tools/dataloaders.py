@@ -4,8 +4,8 @@ Convenience tools for parsing CBOR and BIO stuff
 TODO: add BIO code from the notebook
 '''
 import bisect
-from collections import defaultdict
-from io import BytesIO  # , StringIO
+from collections import defaultdict, namedtuple
+from io import StringIO
 import itertools
 import os
 import pickle
@@ -19,7 +19,6 @@ from trec_car.read_data import (AnnotationsFile, Page, Para,
 import tokenizer_cereal
 
 
-import cbor
 import numpy as np
 import pandas as pd
 
@@ -28,7 +27,7 @@ from torch.utils.data import Dataset, TensorDataset
 import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
-from .dumps import wrap_open, get_filename_path, is_file
+from .dumps import wrap_open, get_filename_path
 
 
 def b2i(number_as_bytes: bytes):
@@ -37,6 +36,7 @@ def b2i(number_as_bytes: bytes):
     """
     return int.from_bytes(number_as_bytes, "big")
 
+PageFormat = namedtuple("PageFormat", ["id", "text", "link_mentions"])
 
 class WikipediaCBOR(Dataset):
     """
@@ -58,6 +58,7 @@ class WikipediaCBOR(Dataset):
                  page_lim=-1,
                  token_length=128,
                  clean_cache=False,
+                 re_preprocess=False,
                  ):
         """
         :param cbor_path the relative path of the wikipedia cbor export
@@ -67,7 +68,8 @@ class WikipediaCBOR(Dataset):
         Ties will be broken randomly.
         :param page_lim the number of pages in a partition
         :param token_length return only the first `token_length` tokens of a page.
-        :param clean_cache delete the old cache
+        :param clean_cache delete the old cache. Implies re_preprocess
+        :param re_preprocess preprocess the text
         """
         self.cbor_path = get_filename_path(cbor_path)
         self.partition_path = get_filename_path(partition_path)
@@ -104,6 +106,8 @@ class WikipediaCBOR(Dataset):
 
             # preprocess and find the top k unique wikipedia links
             self.valid_keys = set(self.key_encoder.values())
+
+        if clean_cache or re_preprocess:
             self.preprocess(page_lim)
             freqs = self.count_frequency()
 
@@ -182,15 +186,17 @@ class WikipediaCBOR(Dataset):
         return [np.random.choice([0, float(tok != 0)],
                                  p=(dropout_rate, 1.0-dropout_rate)) for tok in tokens]
 
-    def preprocess_page(self, page: Page):
+    def preprocess_page(self, enumerated_page: Tuple[int, Page]) -> PageFormat:
         """
         Transform a list of pages into a flattened representation that can
         then be easily (de)serialized.
         """
 
+        id, page = enumerated_page
+
         # For the sake of easy link spans they are byte oriented to make
         # it easier for the rust std
-        page_content = BytesIO()
+        page_content = StringIO()
         links = []
 
         # Encode a link. Cast to padding if the link was not "common".
@@ -218,13 +224,13 @@ class WikipediaCBOR(Dataset):
                 visit_section(body)
 
         def handle_paratext(body: ParaBody):
-            page_content.write(body.get_text().encode())
+            page_content.write(body.get_text())
 
         def handle_paralink(body: ParaLink):
             encoded_link = encode_link(body.page)
             start_byte_span = page_content.tell()
-            end_byte_span = start_byte_span + len(body.get_text().encode()) - 1
-            page_content.write(body.get_text().encode())
+            end_byte_span = start_byte_span + len(body.get_text()) - 1
+            page_content.write(body.get_text())
 
             links.append((encoded_link, start_byte_span, end_byte_span))
 
@@ -243,8 +249,8 @@ class WikipediaCBOR(Dataset):
 
         for skel in page.skeleton:
             visit_section(skel)
-
-        return {"text": page_content.getvalue(), "link_mentions": links}
+        
+        return PageFormat(id, page_content.getvalue(), links)
 
     def preprocess(self, limit=-1):
         """
@@ -261,6 +267,7 @@ class WikipediaCBOR(Dataset):
         if limit == -1:
             limit = len(self)
 
+        """
         with open(rust_cbor_path, "wb") as fp:
             offsets = []
 
@@ -276,10 +283,16 @@ class WikipediaCBOR(Dataset):
                     # enforce this key order
                     parsed = {"id": i, **parsed}
                     cbor.dump(parsed, fp)
+        """
 
         # save cumulated block sizes
-        lengths_per_page = tokenizer_cereal.tokenize_from_cbor_list(
-            rust_cbor_path, rust_cereal_path, offsets)
+        with open(self.cbor_path, "rb") as cbor_fp:
+            lengths_per_page = tokenizer_cereal.tokenize_from_iterator(
+                map(self.preprocess_page, enumerate(read_data.iter_annotations(cbor_fp))),
+                rust_cereal_path, limit)
+            
+        #    tokenize_from_cbor_list(
+        #    rust_cbor_path, rust_cereal_path, offsets)
         
         blocks_per_page = [int(np.floor(length / self.token_length)) for length in lengths_per_page]
 
