@@ -27,7 +27,7 @@ from torch.utils.data import Dataset, TensorDataset
 import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
-from .dumps import wrap_open, get_filename_path
+from .dumps import wrap_open, get_filename_path, is_file
 
 
 def b2i(number_as_bytes: bytes):
@@ -365,59 +365,76 @@ class BIO:
     Load and process the GBK corpus
     """
 
-    def __init__(self, dataset_dir, token_length):
+    def __init__(self, dataset_dir, token_length, clean_cache=False):
+        """
+        :param clean_cache if True clean the cache and restart tokenization again
+        """
         self.token_length = token_length
-        # Download tokenizer from S3 and cache.
-        self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
-                                        'tokenizer', 'bert-base-uncased')
-        data_pd = self.__load_dataset(dataset_dir)
-        self.__simplify_bio(data_pd)
-        utterances, labels = self.__aggregate(data_pd)
+        cache_path = dataset_dir + ".pkl"
+        
+        if clean_cache or not is_file(cache_path):
+            # Download tokenizer from S3 and cache.
+            self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
+                                            'tokenizer', 'bert-base-uncased')
+            data_pd = self.__load_dataset(dataset_dir)
+            self.__simplify_bio(data_pd)
+            utterances, labels = self.__aggregate(data_pd)
 
-        bio_values = list(set(data_pd["bio"].values))
-        bio_values.append("PAD")
+            self.bio_values = list(set(data_pd["bio"].values))
+            self.bio_values.append("PAD")
 
-        # BIO tag to a numerical index (yes, this is dumb way to make an enum)
-        # Apparently one row is misclassified as p?
-        self.bio2idx = {t: i for i, t in enumerate(bio_values)}
-        self.bio2idx['p'] = self.bio2idx['O']
+            # BIO tag to a numerical index (yes, this is dumb way to make an enum)
+            # Apparently one row is misclassified as p?
+            self.bio2idx = {t: i for i, t in enumerate(self.bio_values)}
+            self.bio2idx['p'] = self.bio2idx['O']
 
-        # Tokenize and split
-        tokenized_texts_labels = [
-            self.__tokenize_preserve_labels(sent, labs) for sent, labs in
-            zip(utterances, labels)
-        ]
+            # Tokenize and split
+            tokenized_texts_labels = [
+                self.__tokenize_preserve_labels(sent, labs) for sent, labs in
+                zip(utterances, labels)
+            ]
 
-        tokenized_texts = [token_label_pair[0]
-                           for token_label_pair in tokenized_texts_labels]
-        tokenized_labels = [token_label_pair[1]
-                            for token_label_pair in tokenized_texts_labels]
+            tokenized_texts = [token_label_pair[0]
+                               for token_label_pair in tokenized_texts_labels]
+            tokenized_labels = [token_label_pair[1]
+                                for token_label_pair in tokenized_texts_labels]
 
-        # Pad and convert to ids...
-        self.input_ids = pad_sequences([self.tokenizer.convert_tokens_to_ids(txt)
-                                        for txt in tokenized_texts],
-                                       maxlen=self.token_length, dtype="long",
-                                       value=0.0, truncating="post",
-                                       padding="post")
+            # Pad and convert to ids...
+            self.input_ids = pad_sequences([self.tokenizer.convert_tokens_to_ids(txt)
+                                            for txt in tokenized_texts],
+                                           maxlen=self.token_length, dtype="long",
+                                           value=0.0, truncating="post",
+                                           padding="post")
 
-        self.labels = pad_sequences([[self.bio2idx.get(l) for l in lab]
-                                     for lab in tokenized_labels],
-                                    maxlen=self.token_length,
-                                    value=self.bio2idx["PAD"],
-                                    padding="post", dtype="long",
-                                    truncating="post")
+            self.labels = pad_sequences([[self.bio2idx.get(l) for l in lab]
+                                         for lab in tokenized_labels],
+                                        maxlen=self.token_length,
+                                        value=self.bio2idx["PAD"],
+                                        padding="post", dtype="long",
+                                        truncating="post")
 
-        self.attention_mask = [[float(i != 0.0) for i in ii]
-                               for ii in self.input_ids]
+            self.attention_mask = [[float(i != 0.0) for i in ii]
+                                   for ii in self.input_ids]
 
-        # Tensorize...
-        # pylint:disable=not-callable
-        self.input_ids = torch.tensor(
-            self.input_ids)
-        self.labels = torch.tensor(self.labels)  # pylint:disable=not-callable
-        # pylint:disable=not-callable
-        self.attention_mask = torch.tensor(
-            self.attention_mask)
+            # Tensorize...
+            # pylint:disable=not-callable
+            self.input_ids = torch.tensor(
+                self.input_ids)
+            self.labels = torch.tensor(self.labels)  # pylint:disable=not-callable
+            # pylint:disable=not-callable
+            self.attention_mask = torch.tensor(
+                self.attention_mask)
+            
+            with wrap_open(cache_path, "wb") as pickle_cache:
+                pickle.dump((self.bio_values, self.bio2idx, self.input_ids, self.labels, self.attention_mask), pickle_cache)
+
+            tqdm.tqdm.write("Cache was generated")
+
+        else:
+            with wrap_open(cache_path, "rb") as pickle_cache:
+                self.bio_values, self.bio2idx, self.input_ids, self.labels, self.attention_mask = pickle.load(pickle_cache)
+                
+            tqdm.tqdm.write("Loaded from cache")
 
     def __load_dataset(self, dataset_path):
         """
