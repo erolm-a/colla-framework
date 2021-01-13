@@ -109,8 +109,22 @@ class WikipediaCBOR(Dataset):
             # preprocess and find the top k unique wikipedia links
             self.valid_keys = set(self.key_encoder.values())
 
+        self.rust_cereal_path = self.partition_path + "/test_rust.cereal"
+
         if clean_cache or repreprocess:
             self.preprocess(page_lim)
+
+        else:
+            try:
+                self.tokenizer = tokenizer_cereal.get_default_tokenizer(self.rust_cereal_path)
+
+            # Every rust exception returns a TypeError. Normally get_default_tokenizer
+            # may fail if the rust_cereal_path is not existing, but it would be nice to cover
+            # other types of exceptions
+            # pylint:disable=bare-except
+            except:
+                tqdm.tqdm.write("Unable to find a tokenizer! Regenerating")
+                #self.preprocess(page_lim)
             
         if clean_cache or repreprocess or recount:
             freqs = self.count_frequency()
@@ -255,49 +269,25 @@ class WikipediaCBOR(Dataset):
         
         return PageFormat(id, page_content.getvalue(), links)
 
-    def preprocess(self, limit=-1):
+    def preprocess(self, limit: int):
         """
         Transform the CBOR file into a rust-cerealised version that is already tokenized
         and ready for use.
 
-        :param limit if -1 process the whole Wikipedia, otherwise process only the first
-        `limit` pages.
-        """
-
-        rust_cbor_path = self.partition_path + "/test_rust.cbor"
-        rust_cereal_path = self.partition_path + "/test_rust.cereal"
-
-        if limit == -1:
-            limit = len(self)
-
-        """
-        with open(rust_cbor_path, "wb") as fp:
-            offsets = []
-
-            with open(self.cbor_path, "rb") as cbor_fp:
-                for i, page in enumerate(tqdm.tqdm(read_data.iter_annotations(cbor_fp),
-                                                    total=limit)):
-                    if i >= limit:
-                        break
-
-                    offsets.append(fp.tell())
-                    parsed = self.preprocess_page(page)
-
-                    # enforce this key order
-                    parsed = {"id": i, **parsed}
-                    cbor.dump(parsed, fp)
+        :param limit process the first `limit` pages.
         """
 
         # save cumulated block sizes
         with open(self.cbor_path, "rb") as cbor_fp:
-            lengths_per_page = tokenizer_cereal.tokenize_from_iterator(
+            if getattr(self, "tokenizer", None) is not None:
+                del self.tokenizer # ensure the destructor is called (?)
+ 
+            self.tokenizer = tokenizer_cereal.TokenizerCereal(self.rust_cereal_path,
                 map(self.preprocess_page, enumerate(read_data.iter_annotations(cbor_fp))),
-                rust_cereal_path, limit)
-            
-        #    tokenize_from_cbor_list(
-        #    rust_cbor_path, rust_cereal_path, offsets)
-        
-        blocks_per_page = [int(np.floor(length / self.token_length)) for length in lengths_per_page]
+                limit)
+
+        blocks_per_page = [int(np.floor(length / self.token_length))
+            for length in  self.tokenizer.article_lengths]
 
         with open(self.cumulated_block_sizes_path, "wb") as fp:
             self.cumulated_block_size = np.cumsum(blocks_per_page)
@@ -305,11 +295,9 @@ class WikipediaCBOR(Dataset):
 
     def count_frequency(self) -> Dict[int, int]:
         """
-        Use rust to count the frequency, and *hope* and pray really hard that it's fast.
+        Get the frequency count. Just a mere wrapper over the Rust-made module.
         """
-        rust_cereal_path = self.partition_path + "/test_rust.cereal"
-
-        return tokenizer_cereal.count_frequency(rust_cereal_path)
+        return self.tokenizer.get_frequency_count()
 
     def __getitem__(self, idx: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor]:
         """
@@ -327,8 +315,6 @@ class WikipediaCBOR(Dataset):
         if not isinstance(idx, int):
             idx = idx[0]
 
-        slice_file = self.partition_path + "/test_rust.cereal"
-
         cumulated = self.cumulated_block_size
         page_idx = bisect.bisect_right(cumulated, idx)
         page_block_nums = cumulated[page_idx] - \
@@ -340,8 +326,7 @@ class WikipediaCBOR(Dataset):
             page_idx = 0
             block_offset = 0
 
-        toks, links = tokenizer_cereal.get_token_slice(
-            slice_file, page_idx, block_offset, self.token_length)
+        toks, links = self.tokenizer.get_slice(page_idx, block_offset, self.token_length)
 
         links = [self.key_restrictor.get(x, 0) for x in links]
 
