@@ -124,7 +124,7 @@ class WikipediaCBOR(Dataset):
             # pylint:disable=bare-except
             except:
                 tqdm.tqdm.write("Unable to find a tokenizer! Regenerating")
-                #self.preprocess(page_lim)
+                self.preprocess(page_lim)
             
         if clean_cache or repreprocess or recount:
             freqs = self.count_frequency()

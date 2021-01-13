@@ -19,6 +19,8 @@ use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::cmp::*;
 
+use std::sync::Mutex;
+
 use serde::{Deserialize, Serialize};
 use tokenizers::models::wordpiece::WordPiece;
 use tokenizers::normalizers::bert::BertNormalizer;
@@ -57,15 +59,14 @@ struct PageFormatOutput {
 }
 
 // TODO: understand how to make function attributes
-
 macro_rules! simple_error_lined {
     ($e:expr) => {
         SimpleError::new(format!("{} at line {}", $e.to_string(), line!()))
     };
 }
 
-/// This macro is an absolute hack that arises from my very poor knowledge of macros and my laziness.
 /// Automatically cast any form of error into a type error. Also add python-style documentation.
+/// This macro is an absolute hack that arises from my very poor knowledge of macros and my laziness.
 macro_rules! cast_errors {
     ($func:ident ( $param1:ident : $t1:ty $(, $param:ident : $t:ty )*) -> $resType:ty) => {
         paste! {
@@ -89,15 +90,14 @@ macro_rules! cast_errors {
             }
         }
     };
-
-
-
 }
 
 
 #[pyclass]
 struct TokenizerCereal {
-    slice_file : std::fs::File,
+    // Pytorch's threading may cause issues with the internal seek positioning of a file,
+    // thus, put a simple mutex on this
+    slice_file : Mutex<std::fs::File>,
 
     #[pyo3(get)]
     slice_offsets: Vec<usize>,
@@ -129,32 +129,31 @@ impl TokenizerCereal {
         let slice_offsets = bincode::deserialize_from(toc_file).unwrap();
 
         TokenizerCereal {
-            slice_file: slice_file,
+            slice_file: Mutex::new(slice_file),
             slice_offsets: slice_offsets,
             article_lengths: article_lenghts
         }
     }
 
     /// Get a chosen slice batch from a tokenized slice file.
-    /// :param cereal_path the path of the serialized tokens file.
     /// :param idx the index of the article to use according to the previously generated
-    ///       TOC (whose path is cereal_path + \".toc\").
+    ///        TOC (whose path is cereal_path + \".toc\").
     /// :param block_size the size of the blocks
     /// :param content_block_idx the block idx. The resulting block may have a smaller
-    ///       size than the prescribed block size (true for last blocks).
+    ///        size than the prescribed block size (true for last blocks).
     /// :returns a pair of vectors: text tokens and link link target output.
     fn get_slice(&mut self, idx: usize, block_size: usize,
                  content_block_idx: usize, py: Python)
                  -> PyResult<(Vec<u32>, Vec<u32>)> {
-        get_token_slice(py, &mut self.slice_file, &self.slice_offsets, idx, block_size, content_block_idx)
+        get_token_slice(py, &mut self.slice_file.lock().unwrap(), &self.slice_offsets, idx, block_size, content_block_idx)
     }
 
-    /// Count the frequency of a tokenized slice file.\n
+    /// Count the frequency of a tokenized slice file.
     ///
-    /// :param cereal_path the path of the serialized tokens file.\n
-    /// :returns a frequency count dictionary. The keys are link ids and the values are the frequency count.
+    /// :returns a frequency count dictionary. The keys are link ids and the values are the
+    ///          frequency count.
     fn get_frequency_count(&mut self, py: Python) -> PyResult<HashMap<u32, u32>> {
-        count_frequency(py, &mut self.slice_file, &self.slice_offsets)
+        count_frequency(py, &mut self.slice_file.lock().unwrap(), &self.slice_offsets)
     }
 }
 
@@ -267,7 +266,7 @@ fn get_default_tokenizer_helper(_py: Python, slice_path: &str) -> anyhow::Result
     }
 
     Ok(TokenizerCereal {
-        slice_file: slice_file,
+        slice_file: Mutex::new(slice_file),
         slice_offsets: slice_offsets,
         article_lengths: article_lenghts
     })
