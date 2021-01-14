@@ -201,13 +201,13 @@ class WikipediaCBOR(Dataset):
         return [1 if tok != 0 else 0 for tok in tokens]
     
     @staticmethod
-    def get_boundaries_masked(tokens: List[int]):
+    def get_boundaries_masked(tokens: List[int], entities: List[int]):
         """
         Get a boundary list and a partially masked entity output label. 20%
         of randomly chosen entity mentions are removed.
         
         :param tokens the output labels from the tokenizer
-        :returns a pair (output_bio, output_entities), both with the same shapes of the input.
+        :returns a pair (output_tokkens, output_entities, output_bio), both with the same shapes of the input.
         """
         
         last_seen = 0
@@ -215,10 +215,11 @@ class WikipediaCBOR(Dataset):
         spans = []
         
         output_bio = [0] * len(tokens)
-        output_entities = deepcopy(tokens)
+        output_tokens = deepcopy(tokens)
+        output_entities = deepcopy(entities)
         
         # extend to cover the edge case of boundaries going till the end
-        for idx, tok in enumerate(tokens + [0]):
+        for idx, tok in enumerate(entities + [0]):
             if tok != 0:
                 if last_seen != tok:
                     spans.append([idx, 0])
@@ -241,8 +242,9 @@ class WikipediaCBOR(Dataset):
                 
             else:
                 for i in range(span[0], span[1]):
+                    output_tokens[i] = 103 # [MASK]
                     output_entities[i] = 103 # [MASK]
-        return output_entities, output_bio
+        return output_tokens, output_entities, output_bio
         
 
     def preprocess_page(self, enumerated_page: Tuple[int, Page]) -> PageFormat:
@@ -372,26 +374,20 @@ class WikipediaCBOR(Dataset):
 
         links = [self.key_restrictor.get(x, 0) for x in links]
         
-        droput_entities, dropout_bio = self.get_boundaries_masked(links)
-
-        toks = pad_sequences([toks], maxlen=self.token_length, dtype="long",
-                             value=0.0, truncating="post", padding="post")[0]
-
-        dropout_entities = pad_sequences([droput_entities], maxlen=self.token_length, dtype="long",
-                              value=0.0, truncating="post", padding="post")[0]
+        masked_toks, masked_links, masked_bio = self.get_boundaries_masked(toks, links)
         
-        droput_bio = pad_sequences([dropout_bio], maxlen=self.token_length, dtype="long",
-                              value=0.0, truncating="post", padding="post")[0]
+        toks, links, masked_toks, masked_links, masked_bio = [
+            torch.LongTensor(pad_sequences([x], maxlen=self.token_length,
+                                dtype="long", value=0.0,
+                                truncating="post", padding="post")[0]) \
+                    .squeeze() for x in (toks, links, masked_toks,
+                                            masked_links, masked_bio)
+        ]
         
-        
-        attns = [1 if tok != 0 else 0 for tok in toks]
+        # attend everywhere it is not padded
+        attns = torch.where(toks != 0, 1, 0)
 
-        toks_list = torch.LongTensor(toks).squeeze()
-        attns_list = torch.FloatTensor(attns).squeeze()
-        links_list = torch.LongTensor(dropout_entities).squeeze()
-        bio_list = torch.LongTensor(dropout_bio).squeeze()
-
-        return (toks_list, attns_list, links_list, bio_list)
+        return (masked_toks, toks, masked_links, links, masked_bio, attns)
 
 
 class BIO:
