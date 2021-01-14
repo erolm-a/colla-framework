@@ -4,8 +4,9 @@ Convenience tools for parsing CBOR and BIO stuff
 TODO: add BIO code from the notebook
 '''
 import bisect
-from collections import defaultdict
-from io import BytesIO  # , StringIO
+from collections import defaultdict, namedtuple
+from copy import deepcopy
+from io import StringIO
 import itertools
 import os
 import pickle
@@ -19,7 +20,6 @@ from trec_car.read_data import (AnnotationsFile, Page, Para,
 import tokenizer_cereal
 
 
-import cbor
 import numpy as np
 import pandas as pd
 
@@ -37,6 +37,7 @@ def b2i(number_as_bytes: bytes):
     """
     return int.from_bytes(number_as_bytes, "big")
 
+PageFormat = namedtuple("PageFormat", ["id", "text", "link_mentions"])
 
 class WikipediaCBOR(Dataset):
     """
@@ -54,10 +55,12 @@ class WikipediaCBOR(Dataset):
     def __init__(self,
                  cbor_path: str,
                  partition_path: str,
-                 cutoff_frequency=0.86,
+                 cutoff_frequency=0.03,
                  page_lim=-1,
                  token_length=128,
                  clean_cache=False,
+                 repreprocess=False,
+                 recount=False,
                  ):
         """
         :param cbor_path the relative path of the wikipedia cbor export
@@ -67,7 +70,9 @@ class WikipediaCBOR(Dataset):
         Ties will be broken randomly.
         :param page_lim the number of pages in a partition
         :param token_length return only the first `token_length` tokens of a page.
-        :param clean_cache delete the old cache
+        :param clean_cache delete the old cache. Implies repreprocess and recount
+        :param repreprocess preprocess the text. Implies recount
+        :param recount recount the frequencies and update the top-k common entity list.
         """
         self.cbor_path = get_filename_path(cbor_path)
         self.partition_path = get_filename_path(partition_path)
@@ -104,9 +109,26 @@ class WikipediaCBOR(Dataset):
 
             # preprocess and find the top k unique wikipedia links
             self.valid_keys = set(self.key_encoder.values())
-            self.preprocess(page_lim)
-            freqs = self.count_frequency()
 
+        self.rust_cereal_path = self.partition_path + "/test_rust.cereal"
+
+        if clean_cache or repreprocess:
+            self.preprocess(page_lim)
+
+        else:
+            try:
+                self.tokenizer = tokenizer_cereal.get_default_tokenizer(self.rust_cereal_path)
+
+            # Every rust exception returns a TypeError. Normally get_default_tokenizer
+            # may fail if the rust_cereal_path is not existing, but it would be nice to cover
+            # other types of exceptions
+            # pylint:disable=bare-except
+            except:
+                tqdm.tqdm.write("Unable to find a tokenizer! Regenerating")
+                self.preprocess(page_lim)
+            
+        if clean_cache or repreprocess or recount:
+            freqs = self.count_frequency()
             tqdm.tqdm.write("Obtained link frequency, sorting...")
             freqs_as_pair = list(zip(freqs.values(), freqs.keys()))
             tqdm.tqdm.write("Sorted, filtering the most common links...")
@@ -170,27 +192,72 @@ class WikipediaCBOR(Dataset):
         return self.cumulated_block_size[-1]
 
     @staticmethod
-    def get_attention_mask(tokens: List[int], dropout_rate=0.2):
+    def get_attention_mask(tokens: List[int]):
         """
         Get an attention mask. Padding tokens are automatically masked out.
-        The others have a probability of being masked given by p.
-
         :param tokens the tokens to process
-        :param dropout_rate the dropout rate. a value of 0 means no elements are excluded.
         """
 
-        return [np.random.choice([0, float(tok != 0)],
-                                 p=(dropout_rate, 1.0-dropout_rate)) for tok in tokens]
+        return [1 if tok != 0 else 0 for tok in tokens]
+    
+    @staticmethod
+    def get_boundaries_masked(tokens: List[int], entities: List[int]):
+        """
+        Get a boundary list and a partially masked entity output label. 20%
+        of randomly chosen entity mentions are removed.
+        
+        :param tokens the output labels from the tokenizer
+        :returns a pair (output_tokkens, output_entities, output_bio), both with the same shapes of the input.
+        """
+        
+        last_seen = 0
+        
+        spans = []
+        
+        output_bio = [0] * len(tokens)
+        output_tokens = deepcopy(tokens)
+        output_entities = deepcopy(entities)
+        
+        # extend to cover the edge case of boundaries going till the end
+        for idx, tok in enumerate(entities + [0]):
+            if tok != 0:
+                if last_seen != tok:
+                    spans.append([idx, 0])
+                if last_seen != 0:
+                    spans[-1][1] = idx
+                    
 
-    def preprocess_page(self, page: Page):
+            elif last_seen != 0:
+                spans[-1][1] = idx
+            last_seen = tok
+            
+        # "We remove 20% of randomly chosen entity mentions"
+        spans_to_take = np.random.choice([False, True], len(spans), p=(.2, .8))
+
+        for span, to_take in zip(spans, spans_to_take):
+            if to_take:
+                output_bio[span[0]] = 1
+                for i in range(span[0]+1, span[1]):
+                    output_bio[i] = 2
+                
+            else:
+                for i in range(span[0], span[1]):
+                    output_tokens[i] = 103 # [MASK]
+                    output_entities[i] = 103 # [MASK]
+        return output_tokens, output_entities, output_bio
+        
+
+    def preprocess_page(self, enumerated_page: Tuple[int, Page]) -> PageFormat:
         """
         Transform a list of pages into a flattened representation that can
         then be easily (de)serialized.
         """
 
+        id, page = enumerated_page
+
         # For the sake of easy link spans they are byte oriented to make
         # it easier for the rust std
-        page_content = BytesIO()
+        page_content = StringIO()
         links = []
 
         # Encode a link. Cast to padding if the link was not "common".
@@ -218,13 +285,13 @@ class WikipediaCBOR(Dataset):
                 visit_section(body)
 
         def handle_paratext(body: ParaBody):
-            page_content.write(body.get_text().encode())
+            page_content.write(body.get_text())
 
         def handle_paralink(body: ParaLink):
             encoded_link = encode_link(body.page)
             start_byte_span = page_content.tell()
-            end_byte_span = start_byte_span + len(body.get_text().encode()) - 1
-            page_content.write(body.get_text().encode())
+            end_byte_span = start_byte_span + len(body.get_text()) - 1
+            page_content.write(body.get_text())
 
             links.append((encoded_link, start_byte_span, end_byte_span))
 
@@ -243,45 +310,28 @@ class WikipediaCBOR(Dataset):
 
         for skel in page.skeleton:
             visit_section(skel)
+        
+        return PageFormat(id, page_content.getvalue(), links)
 
-        return {"text": page_content.getvalue(), "link_mentions": links}
-
-    def preprocess(self, limit=-1):
+    def preprocess(self, limit: int):
         """
         Transform the CBOR file into a rust-cerealised version that is already tokenized
         and ready for use.
 
-        :param limit if -1 process the whole Wikipedia, otherwise process only the first
-        `limit` pages.
+        :param limit process the first `limit` pages.
         """
 
-        rust_cbor_path = self.partition_path + "/test_rust.cbor"
-        rust_cereal_path = self.partition_path + "/test_rust.cereal"
-
-        if limit == -1:
-            limit = len(self)
-
-        with open(rust_cbor_path, "wb") as fp:
-            offsets = []
-
-            with open(self.cbor_path, "rb") as cbor_fp:
-                for i, page in enumerate(tqdm.tqdm(read_data.iter_annotations(cbor_fp),
-                                                    total=limit)):
-                    if i >= limit:
-                        break
-
-                    offsets.append(fp.tell())
-                    parsed = self.preprocess_page(page)
-
-                    # enforce this key order
-                    parsed = {"id": i, **parsed}
-                    cbor.dump(parsed, fp)
-
         # save cumulated block sizes
-        lengths_per_page = tokenizer_cereal.tokenize_from_cbor_list(
-            rust_cbor_path, rust_cereal_path, offsets)
-        
-        blocks_per_page = [int(np.floor(length / self.token_length)) for length in lengths_per_page]
+        with open(self.cbor_path, "rb") as cbor_fp:
+            if getattr(self, "tokenizer", None) is not None:
+                del self.tokenizer # ensure the destructor is called (?)
+ 
+            self.tokenizer = tokenizer_cereal.TokenizerCereal(self.rust_cereal_path,
+                map(self.preprocess_page, enumerate(read_data.iter_annotations(cbor_fp))),
+                limit)
+
+        blocks_per_page = [int(np.floor(length / self.token_length))
+            for length in  self.tokenizer.article_lengths]
 
         with open(self.cumulated_block_sizes_path, "wb") as fp:
             self.cumulated_block_size = np.cumsum(blocks_per_page)
@@ -289,16 +339,13 @@ class WikipediaCBOR(Dataset):
 
     def count_frequency(self) -> Dict[int, int]:
         """
-        Use rust to count the frequency, and *hope* and pray really hard that it's fast.
+        Get the frequency count. Just a mere wrapper over the Rust-made module.
         """
-        rust_cereal_path = self.partition_path + "/test_rust.cereal"
-
-        return tokenizer_cereal.count_frequency(rust_cereal_path)
+        return self.tokenizer.get_frequency_count()
 
     def __getitem__(self, idx: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor]:
         """
-        Return a tensor with the given batches. The shape of a batch is
-        (b x 3 x MAX_LEN).
+        Return a tensor for the given index.
 
         The first row is the token embedding via WordPiece ids.
         The second row is the BERT attention mask.
@@ -312,8 +359,6 @@ class WikipediaCBOR(Dataset):
         if not isinstance(idx, int):
             idx = idx[0]
 
-        slice_file = self.partition_path + "/test_rust.cereal"
-
         cumulated = self.cumulated_block_size
         page_idx = bisect.bisect_right(cumulated, idx)
         page_block_nums = cumulated[page_idx] - \
@@ -325,27 +370,24 @@ class WikipediaCBOR(Dataset):
             page_idx = 0
             block_offset = 0
 
-        toks, links = tokenizer_cereal.get_token_slice(
-            slice_file, page_idx, block_offset, self.token_length)
+        toks, links = self.tokenizer.get_slice(page_idx, block_offset, self.token_length)
 
         links = [self.key_restrictor.get(x, 0) for x in links]
+        
+        masked_toks, masked_links, masked_bio = self.get_boundaries_masked(toks, links)
+        
+        toks, links, masked_toks, masked_links, masked_bio = [
+            torch.LongTensor(pad_sequences([x], maxlen=self.token_length,
+                                dtype="long", value=0.0,
+                                truncating="post", padding="post")[0]) \
+                    .squeeze() for x in (toks, links, masked_toks,
+                                            masked_links, masked_bio)
+        ]
+        
+        # attend everywhere it is not padded
+        attns = torch.where(toks != 0, 1, 0)
 
-        toks = pad_sequences([toks], maxlen=self.token_length, dtype="long",
-                             value=0.0, truncating="post", padding="post")[0]
-
-        links = pad_sequences([links], maxlen=self.token_length, dtype="long",
-                              value=0.0, truncating="post", padding="post")[0]
-
-        attns = self.get_attention_mask(toks)
-
-        # TODO: possibly change the float format to float16...
-        # Does the change happen when moving to GPU?
-        # Need to investigate this...
-        toks_list = torch.LongTensor(toks).squeeze()
-        attns_list = torch.FloatTensor(attns).squeeze()
-        links_list = torch.LongTensor(links).squeeze()
-
-        return (toks_list, attns_list, links_list)
+        return (masked_toks, toks, masked_links, links, masked_bio, attns)
 
 
 class BIO:
@@ -353,59 +395,76 @@ class BIO:
     Load and process the GBK corpus
     """
 
-    def __init__(self, dataset_dir, token_length):
+    def __init__(self, dataset_dir, token_length, clean_cache=False):
+        """
+        :param clean_cache if True clean the cache and restart tokenization again
+        """
         self.token_length = token_length
-        # Download tokenizer from S3 and cache.
-        self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
-                                        'tokenizer', 'bert-base-uncased')
-        data_pd = self.__load_dataset(dataset_dir)
-        self.__simplify_bio(data_pd)
-        utterances, labels = self.__aggregate(data_pd)
+        cache_path = dataset_dir + ".pkl"
+        
+        if clean_cache or not is_file(cache_path):
+            # Download tokenizer from S3 and cache.
+            self.tokenizer = torch.hub.load('huggingface/pytorch-transformers',
+                                            'tokenizer', 'bert-base-uncased')
+            data_pd = self.__load_dataset(dataset_dir)
+            self.__simplify_bio(data_pd)
+            utterances, labels = self.__aggregate(data_pd)
 
-        bio_values = list(set(data_pd["bio"].values))
-        bio_values.append("PAD")
+            self.bio_values = list(set(data_pd["bio"].values))
+            self.bio_values.append("PAD")
 
-        # BIO tag to a numerical index (yes, this is dumb way to make an enum)
-        # Apparently one row is misclassified as p?
-        self.bio2idx = {t: i for i, t in enumerate(bio_values)}
-        self.bio2idx['p'] = self.bio2idx['O']
+            # BIO tag to a numerical index (yes, this is dumb way to make an enum)
+            # Apparently one row is misclassified as p?
+            self.bio2idx = {t: i for i, t in enumerate(self.bio_values)}
+            self.bio2idx['p'] = self.bio2idx['O']
 
-        # Tokenize and split
-        tokenized_texts_labels = [
-            self.__tokenize_preserve_labels(sent, labs) for sent, labs in
-            zip(utterances, labels)
-        ]
+            # Tokenize and split
+            tokenized_texts_labels = [
+                self.__tokenize_preserve_labels(sent, labs) for sent, labs in
+                zip(utterances, labels)
+            ]
 
-        tokenized_texts = [token_label_pair[0]
-                           for token_label_pair in tokenized_texts_labels]
-        tokenized_labels = [token_label_pair[1]
-                            for token_label_pair in tokenized_texts_labels]
+            tokenized_texts = [token_label_pair[0]
+                               for token_label_pair in tokenized_texts_labels]
+            tokenized_labels = [token_label_pair[1]
+                                for token_label_pair in tokenized_texts_labels]
 
-        # Pad and convert to ids...
-        self.input_ids = pad_sequences([self.tokenizer.convert_tokens_to_ids(txt)
-                                        for txt in tokenized_texts],
-                                       maxlen=self.token_length, dtype="long",
-                                       value=0.0, truncating="post",
-                                       padding="post")
+            # Pad and convert to ids...
+            self.input_ids = pad_sequences([self.tokenizer.convert_tokens_to_ids(txt)
+                                            for txt in tokenized_texts],
+                                           maxlen=self.token_length, dtype="long",
+                                           value=0.0, truncating="post",
+                                           padding="post")
 
-        self.labels = pad_sequences([[self.bio2idx.get(l) for l in lab]
-                                     for lab in tokenized_labels],
-                                    maxlen=self.token_length,
-                                    value=self.bio2idx["PAD"],
-                                    padding="post", dtype="long",
-                                    truncating="post")
+            self.labels = pad_sequences([[self.bio2idx.get(l) for l in lab]
+                                         for lab in tokenized_labels],
+                                        maxlen=self.token_length,
+                                        value=self.bio2idx["PAD"],
+                                        padding="post", dtype="long",
+                                        truncating="post")
 
-        self.attention_mask = [[float(i != 0.0) for i in ii]
-                               for ii in self.input_ids]
+            self.attention_mask = [[float(i != 0.0) for i in ii]
+                                   for ii in self.input_ids]
 
-        # Tensorize...
-        # pylint:disable=not-callable
-        self.input_ids = torch.tensor(
-            self.input_ids)
-        self.labels = torch.tensor(self.labels)  # pylint:disable=not-callable
-        # pylint:disable=not-callable
-        self.attention_mask = torch.tensor(
-            self.attention_mask)
+            # Tensorize...
+            # pylint:disable=not-callable
+            self.input_ids = torch.tensor(
+                self.input_ids)
+            self.labels = torch.tensor(self.labels)  # pylint:disable=not-callable
+            # pylint:disable=not-callable
+            self.attention_mask = torch.tensor(
+                self.attention_mask)
+            
+            with wrap_open(cache_path, "wb") as pickle_cache:
+                pickle.dump((self.bio_values, self.bio2idx, self.input_ids, self.labels, self.attention_mask), pickle_cache)
+
+            tqdm.tqdm.write("Cache was generated")
+
+        else:
+            with wrap_open(cache_path, "rb") as pickle_cache:
+                self.bio_values, self.bio2idx, self.input_ids, self.labels, self.attention_mask = pickle.load(pickle_cache)
+                
+            tqdm.tqdm.write("Loaded from cache")
 
     def __load_dataset(self, dataset_path):
         """

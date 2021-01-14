@@ -4,7 +4,9 @@ python-dateutil==2.8.1
 pytz==2020.1
 SPARQLWrapper==1.8.5
 spacy==2.3.0
-sentence-transformers==0.2.6.2
+sentence-transformers==0.4.1
+transformers==4.2.0
+datasets==1.2.1
 gsutil==4.51
 bs4==0.0.1
 Flask==1.1.2
