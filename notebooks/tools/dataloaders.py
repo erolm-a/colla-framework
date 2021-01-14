@@ -5,6 +5,7 @@ TODO: add BIO code from the notebook
 '''
 import bisect
 from collections import defaultdict, namedtuple
+from copy import deepcopy
 from io import StringIO
 import itertools
 import os
@@ -191,17 +192,58 @@ class WikipediaCBOR(Dataset):
         return self.cumulated_block_size[-1]
 
     @staticmethod
-    def get_attention_mask(tokens: List[int], dropout_rate=0.2):
+    def get_attention_mask(tokens: List[int]):
         """
         Get an attention mask. Padding tokens are automatically masked out.
-        The others have a probability of being masked given by p.
-
         :param tokens the tokens to process
-        :param dropout_rate the dropout rate. a value of 0 means no elements are excluded.
         """
 
-        return [np.random.choice([0, float(tok != 0)],
-                                 p=(dropout_rate, 1.0-dropout_rate)) for tok in tokens]
+        return [1 if tok != 0 else 0 for tok in tokens]
+    
+    @staticmethod
+    def get_boundaries_masked(tokens: List[int]):
+        """
+        Get a boundary list and a partially masked entity output label. 20%
+        of randomly chosen entity mentions are removed.
+        
+        :param tokens the output labels from the tokenizer
+        :returns a pair (output_bio, output_entities), both with the same shapes of the input.
+        """
+        
+        last_seen = 0
+        
+        spans = []
+        
+        output_bio = [0] * len(tokens)
+        output_entities = deepcopy(tokens)
+        
+        # extend to cover the edge case of boundaries going till the end
+        for idx, tok in enumerate(tokens + [0]):
+            if tok != 0:
+                if last_seen != tok:
+                    spans.append([idx, 0])
+                if last_seen != 0:
+                    spans[-1][1] = idx
+                    
+
+            elif last_seen != 0:
+                spans[-1][1] = idx
+            last_seen = tok
+            
+        # "We remove 20% of randomly chosen entity mentions"
+        spans_to_take = np.random.choice([False, True], len(spans), p=(.2, .8))
+
+        for span, to_take in zip(spans, spans_to_take):
+            if to_take:
+                output_bio[span[0]] = 1
+                for i in range(span[0]+1, span[1]):
+                    output_bio[i] = 2
+                
+            else:
+                for i in range(span[0], span[1]):
+                    output_entities[i] = 103 # [MASK]
+        return output_entities, output_bio
+        
 
     def preprocess_page(self, enumerated_page: Tuple[int, Page]) -> PageFormat:
         """
@@ -329,20 +371,27 @@ class WikipediaCBOR(Dataset):
         toks, links = self.tokenizer.get_slice(page_idx, block_offset, self.token_length)
 
         links = [self.key_restrictor.get(x, 0) for x in links]
+        
+        droput_entities, dropout_bio = self.get_boundaries_masked(links)
 
         toks = pad_sequences([toks], maxlen=self.token_length, dtype="long",
                              value=0.0, truncating="post", padding="post")[0]
 
-        links = pad_sequences([links], maxlen=self.token_length, dtype="long",
+        dropout_entities = pad_sequences([droput_entities], maxlen=self.token_length, dtype="long",
                               value=0.0, truncating="post", padding="post")[0]
-
-        attns = self.get_attention_mask(toks)
+        
+        droput_bio = pad_sequences([dropout_bio], maxlen=self.token_length, dtype="long",
+                              value=0.0, truncating="post", padding="post")[0]
+        
+        
+        attns = [1 if tok != 0 else 0 for tok in toks]
 
         toks_list = torch.LongTensor(toks).squeeze()
         attns_list = torch.FloatTensor(attns).squeeze()
-        links_list = torch.LongTensor(links).squeeze()
+        links_list = torch.LongTensor(dropout_entities).squeeze()
+        bio_list = torch.LongTensor(dropout_bio).squeeze()
 
-        return (toks_list, attns_list, links_list)
+        return (toks_list, attns_list, links_list, bio_list)
 
 
 class BIO:
