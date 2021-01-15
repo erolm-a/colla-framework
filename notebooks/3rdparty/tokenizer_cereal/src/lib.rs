@@ -70,8 +70,8 @@ macro_rules! simple_error_lined {
 macro_rules! cast_errors {
     ($func:ident ( $param1:ident : $t1:ty $(, $param:ident : $t:ty )*) -> $resType:ty) => {
         paste! {
-            fn $func( py: Python, $param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
-                match [<$func _helper>] (py, $param1 $(, $param)*) {
+            fn $func( $param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
+                match [<$func _helper>] ($param1 $(, $param)*) {
                     Ok(result) => Ok(result),
                     Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
                 }
@@ -82,8 +82,8 @@ macro_rules! cast_errors {
     (PYFUNC $func:ident ($param1:ident : $t1:ty $(, $param:ident : $t:ty )*) -> $resType:ty) => {
         paste! {
             #[pyfunction]
-            fn $func( py: Python, $param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
-                match [<$func _helper>] (py, $param1 $(, $param)*) {
+            fn $func($param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
+                match [<$func _helper>] ($param1 $(, $param)*) {
                     Ok(result) => Ok(result),
                     Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
                 }
@@ -114,8 +114,8 @@ impl TokenizerCereal {
     /// :param slice_path the path of the outputs
     /// :param iterator the generator to use
     /// :param estimated_len the estimated number of article to preprocess. It only has cosmetic reasons for the progress bar.
-    fn new(slice_path: &str, iterator: &PyAny, estimated_len: usize, py: Python) -> TokenizerCereal {
-        let article_lenghts = tokenize_from_iterator(py, iterator, slice_path, estimated_len).unwrap();
+    fn new(slice_path: &str, iterator: &PyAny, estimated_len: usize) -> TokenizerCereal {
+        let article_lenghts = tokenize_from_iterator(iterator, slice_path, estimated_len).unwrap();
 
         // serialize article lengths
         {
@@ -143,17 +143,22 @@ impl TokenizerCereal {
     ///        size than the prescribed block size (true for last blocks).
     /// :returns a pair of vectors: text tokens and link link target output.
     fn get_slice(&mut self, idx: usize, block_size: usize,
-                 content_block_idx: usize, py: Python)
+                 content_block_idx: usize)
                  -> PyResult<(Vec<u32>, Vec<u32>)> {
-        get_token_slice(py, &mut self.slice_file.lock().unwrap(), &self.slice_offsets, idx, block_size, content_block_idx)
+
+        let file = &mut self.slice_file.lock().unwrap();
+        file.seek(SeekFrom::Start(0))?;
+        get_token_slice(file, &self.slice_offsets, idx, block_size, content_block_idx)
     }
 
     /// Count the frequency of a tokenized slice file.
     ///
     /// :returns a frequency count dictionary. The keys are link ids and the values are the
     ///          frequency count.
-    fn get_frequency_count(&mut self, py: Python) -> PyResult<HashMap<u32, u32>> {
-        count_frequency(py, &mut self.slice_file.lock().unwrap(), &self.slice_offsets)
+    fn get_frequency_count(&mut self) -> PyResult<HashMap<u32, u32>> {
+        let file = &mut self.slice_file.lock().unwrap();
+        file.seek(SeekFrom::Start(0))?;
+        count_frequency(file, &self.slice_offsets)
     }
 }
 
@@ -183,7 +188,6 @@ cast_errors!(count_frequency(
     slice_offsets: &Vec<usize>) -> HashMap<u32, u32>);
 
 fn tokenize_from_iterator_helper(
-    _py: Python,
     iterator: &PyAny,
     output_path: &str,
     estimated_len: usize
@@ -201,7 +205,7 @@ fn tokenize_from_iterator_helper(
 
 
     // the number of articles to write at a time
-    const BUFFER_SIZE : usize = 100;
+    const BUFFER_SIZE : usize = 500;
 
     let pb = ProgressBar::new(estimated_len as u64);
 
@@ -248,7 +252,7 @@ fn tokenize_from_iterator_helper(
     Ok(lengths)
 }
 
-fn get_default_tokenizer_helper(_py: Python, slice_path: &str) -> anyhow::Result<TokenizerCereal>
+fn get_default_tokenizer_helper(slice_path: &str) -> anyhow::Result<TokenizerCereal>
 {
     let slice_file = File::open(slice_path)?;
 
@@ -310,14 +314,12 @@ fn write_slices<T: Write + Seek>(
 }
 
 fn get_token_slice_helper(
-    _py: Python,
     input_file: &mut File, // required mutability for seeks
     slice_offsets: &Vec<usize>,
     idx: usize,
     block_idx: usize,
     context_block_size: usize,
 ) -> anyhow::Result<(Vec<u32>, Vec<u32>)> {
-    // FIXME: we are opening and deserializing this file every time! Can we avoid this?
     input_file.seek(SeekFrom::Start(slice_offsets[idx] as u64))?;
 
     let mut buf: Vec<u8> = vec![0_u8; (slice_offsets[idx+1] - slice_offsets[idx]) as usize];
@@ -373,7 +375,6 @@ fn extract_link_mask(
 }
 
 fn count_frequency_helper(
-    _py: Python,
     slice: &mut File,
     slice_offsets: &Vec<usize>
 ) -> anyhow::Result<HashMap<u32, u32>> {
