@@ -54,7 +54,7 @@ struct PageFormat {
     link_mentions: Vec<(u32, u32, u32)>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 struct PageFormatOutput {
     // a page identifier
     id: u32,
@@ -340,20 +340,26 @@ fn tokenize_from_iterator_helper(
         let encodings = tokenizer.encode_batch(inputs, false)
                                  .map_err(|e| simple_error_lined!(e))?;
 
-        let page_outputs : Vec<PageFormatOutput> = encodings.iter().zip(page_inputs.iter()).map(|(encoding, page_input)| {
-            let encoding_toks_offsets = encoding.get_offsets();
-            let encoding_ids = encoding.get_ids();
+        let page_outputs : Vec<PageFormatOutput> = encodings.iter()
+            .zip(page_inputs.iter())
+            .filter_map(|(encoding, page_input)| {
+                let encoding_ids = encoding.get_ids();
 
-            let link_embedding = extract_link_mask(encoding_toks_offsets, &page_input.link_mentions);
+                pb.inc(1);
 
-            pb.inc(1);
-
-            PageFormatOutput {
-                id: page_input.id,
-                tokens: encoding_ids.to_vec(),
-                link_embedding,
-            }
-        }).collect();
+                if encoding_ids.len() > 0 {
+                    let encoding_toks_offsets = encoding.get_offsets();
+                    let link_embedding = extract_link_mask(encoding_toks_offsets, &page_input.link_mentions);
+                    Some(PageFormatOutput {
+                        id: page_input.id,
+                        tokens: encoding_ids.to_vec(),
+                        link_embedding,
+                    })
+                } else {
+                    log::warn!("page_input {} yielded an empty token list. Skipping", page_input.id);
+                    None
+                }
+            }).collect();
         
 
         write_slices(&mut output_file_stream, &page_outputs,
@@ -393,8 +399,11 @@ fn get_default_tokenizer_helper(slice_path: &str) -> anyhow::Result<TokenizerCer
 
 // fn write_slices(output_file: &str, page_outputs: &Vec<PageFormatOutput>, block_size: u32) -> anyhow::Result<Vec<u32>> {
 fn write_slices<T: Write + Seek>(
-    output_file_stream: &mut T, page_outputs: &Vec<PageFormatOutput>,
-    lenghts: &mut Vec<u32>, offsets: &mut Vec<usize>)-> anyhow::Result<()> {
+    output_file_stream: &mut T,
+    page_outputs: &Vec<PageFormatOutput>,
+    lenghts: &mut Vec<u32>,
+    offsets: &mut Vec<usize>)
+        -> anyhow::Result<()> {
     let pb = ProgressBar::new(page_outputs.len() as u64);
 
     offsets.extend(page_outputs.iter().scan(
