@@ -11,6 +11,10 @@ extern crate simple_error;
 
 extern crate indicatif;
 
+extern crate crossbeam;
+
+extern crate log;
+
 use simple_error::SimpleError;
 
 use std::collections::HashMap;
@@ -19,7 +23,7 @@ use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::cmp::*;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokenizers::models::wordpiece::WordPiece;
@@ -35,6 +39,8 @@ use itertools::Itertools;
 use paste::paste;
 
 use indicatif::ProgressBar;
+
+// TESTING
 
 #[derive(FromPyObject)]
 struct PageFormat {
@@ -73,7 +79,9 @@ macro_rules! cast_errors {
             fn $func( $param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
                 match [<$func _helper>] ($param1 $(, $param)*) {
                     Ok(result) => Ok(result),
-                    Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
+                    //Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
+
+                    Err(e) => panic!("Happened error {} at line {} ", e.to_string(), line!())
                 }
             }
         }
@@ -85,7 +93,8 @@ macro_rules! cast_errors {
             fn $func($param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
                 match [<$func _helper>] ($param1 $(, $param)*) {
                     Ok(result) => Ok(result),
-                    Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
+                    // Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
+                    Err(e) => panic!("Happened error {} at line {} ", e.to_string(), line!())
                 }
             }
         }
@@ -97,7 +106,7 @@ macro_rules! cast_errors {
 struct TokenizerCereal {
     // Pytorch's threading may cause issues with the internal seek positioning of a file,
     // thus, put a simple mutex on this
-    slice_file : Mutex<std::fs::File>,
+    slice_file : Arc<Mutex<std::fs::File>>,
 
     #[pyo3(get)]
     slice_offsets: Vec<usize>,
@@ -114,8 +123,8 @@ impl TokenizerCereal {
     /// :param slice_path the path of the outputs
     /// :param iterator the generator to use
     /// :param estimated_len the estimated number of article to preprocess. It only has cosmetic reasons for the progress bar.
-    fn new(slice_path: &str, iterator: &PyAny, estimated_len: usize) -> TokenizerCereal {
-        let article_lenghts = tokenize_from_iterator(iterator, slice_path, estimated_len).unwrap();
+    fn new(slice_path: &str, iterator: &PyAny, estimated_len: usize, py: Python) -> TokenizerCereal {
+        let article_lenghts = tokenize_from_iterator(py, iterator, slice_path, estimated_len).unwrap();
 
         // serialize article lengths
         {
@@ -129,7 +138,7 @@ impl TokenizerCereal {
         let slice_offsets = bincode::deserialize_from(toc_file).unwrap();
 
         TokenizerCereal {
-            slice_file: Mutex::new(slice_file),
+            slice_file: Arc::new(Mutex::new(slice_file)),
             slice_offsets: slice_offsets,
             article_lengths: article_lenghts
         }
@@ -138,28 +147,30 @@ impl TokenizerCereal {
     /// Get a chosen slice batch from a tokenized slice file.
     /// :param idx the index of the article to use according to the previously generated
     ///        TOC (whose path is cereal_path + \".toc\").
-    /// :param block_size the size of the blocks
-    /// :param content_block_idx the block idx. The resulting block may have a smaller
+    /// :param block_idx the block idx. The resulting block may have a smaller
     ///        size than the prescribed block size (true for last blocks).
+    /// :param content_block_size the size of the blocks
     /// :returns a pair of vectors: text tokens and link link target output.
-    fn get_slice(&mut self, idx: usize, block_size: usize,
-                 content_block_idx: usize)
+    fn get_slice(&self, idx: usize, block_idx: usize, content_block_size: usize)
                  -> PyResult<(Vec<u32>, Vec<u32>)> {
 
-        let file = &mut self.slice_file.lock().unwrap();
+        let file_ref = Arc::clone(&self.slice_file);
+        let file = &mut file_ref.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;
-        get_token_slice(file, &self.slice_offsets, idx, block_size, content_block_idx)
+        get_token_slice(file, &self.slice_offsets, idx, block_idx, content_block_size)
     }
 
     /// Count the frequency of a tokenized slice file.
     ///
     /// :returns a frequency count dictionary. The keys are link ids and the values are the
     ///          frequency count.
-    fn get_frequency_count(&mut self) -> PyResult<HashMap<u32, u32>> {
-        let file = &mut self.slice_file.lock().unwrap();
+    fn get_frequency_count(&self) -> PyResult<HashMap<u32, u32>> {
+        let file_ref = Arc::clone(&self.slice_file);
+        let file = &mut file_ref.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;
         count_frequency(file, &self.slice_offsets)
     }
+
 }
 
 /// This module provides some convenience functions for tokenizing and accessing tokenized
@@ -172,7 +183,100 @@ fn tokenizer_cereal(_py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
-cast_errors!(tokenize_from_iterator(generator: &PyAny, output_path: &str, estimated_len: usize) -> Vec<u32>);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PATH: &str = "/wikipedia/car-wiki2020-01-01/partitions/test_rust.cereal";
+
+    fn get_tokenizer() -> Arc<TokenizerCereal> {
+        let cereal_path = match std::env::var("DATA_DIR") {
+            Ok(val) => val + PATH,
+            Err(_) => "data".to_owned() + PATH
+        };
+
+        Arc::new(get_default_tokenizer_helper(&cereal_path).unwrap())
+    }
+
+    #[test]
+    fn single_slice_should_not_panic() {
+        let reqs = vec![(3273, 83), (1971, 1)]; // the firsts request is a bit suspect
+
+        let tokenizer = get_tokenizer();
+
+        for (a, b) in reqs {
+            tokenizer.get_slice(a, 128, b).unwrap();
+        }
+    }
+
+    #[test]
+    fn multithreading_should_not_panic() {
+        let reqs: Arc<Vec<(usize, usize)>> = Arc::new(vec![
+            (5500,0),
+            (4277,12),
+            (2591,38),
+            (5180,72),
+            (1942,2),
+            (5102,20),
+            (6612,44),
+            (2216,1),
+            (2239,10),
+            (1485,24),
+            (6025,18),
+            (2615,35),
+            (6876,44),
+            (6775,2),
+            (2547,28),
+            (9131,10),
+            (1442,7),
+            (9387,98),
+            (2337,34),
+            (553,48),
+            (4321,102),
+            (6641,15),
+            (928,6) ]);
+
+        let cereal_path = match std::env::var("DATA_DIR") {
+            Ok(val) => val + PATH,
+            Err(_) => "data".to_owned() + PATH
+        };
+
+        let tokenizer = Arc::new(get_default_tokenizer_helper(&cereal_path).unwrap());
+
+        let (s, r) = crossbeam::channel::unbounded();
+
+        // let q = SegQueue::new();
+
+        let mut counter = 0;
+
+        crossbeam::scope(|scope| {
+            for ranges in reqs.chunks(5) {
+                let shared_tokenizer = tokenizer.clone();
+                let mut results: Vec<(Vec<u32>, Vec<u32>)> = vec![];
+
+                let s2 = s.clone();
+
+                scope.spawn(move |_| {
+                    for (a, b) in ranges.iter() {
+                        results.push(shared_tokenizer.get_slice(*a, 128, *b).unwrap());
+                    }
+
+                    s2.send(results).unwrap();
+                });
+            }
+
+        while counter < reqs.len() {
+            let received = r.recv().unwrap();
+            counter += received.len();
+        }
+       }).unwrap();
+
+        assert_eq!(counter, reqs.len());
+
+    }
+}
+
+cast_errors!(tokenize_from_iterator(py: Python, generator: &PyAny, output_path: &str, estimated_len: usize) -> Vec<u32>);
 
 cast_errors!(PYFUNC get_default_tokenizer(slice_path: &str) -> TokenizerCereal);
 
@@ -188,6 +292,7 @@ cast_errors!(count_frequency(
     slice_offsets: &Vec<usize>) -> HashMap<u32, u32>);
 
 fn tokenize_from_iterator_helper(
+    py: Python,
     iterator: &PyAny,
     output_path: &str,
     estimated_len: usize
@@ -220,7 +325,15 @@ fn tokenize_from_iterator_helper(
                                   .chunks(BUFFER_SIZE) {
         
         // NOTE: Failing pages are silently ignored.
-        let page_inputs: Vec<PageFormat> = chunk.filter_map(|page_output| page_output.ok()).collect();
+        // But at least do not silent the error!
+        let page_inputs: Vec<PageFormat> = chunk.filter_map(|page_output| match page_output {
+            Ok(value) => Some(value),
+            Err(error) => {
+                log::warn!("Got a Python error while tokenizing. This entry will be ignored. Read the stacktrace below for details.");
+                error.print(py);
+                None
+            }
+        }).collect();
 
         let inputs = page_inputs.as_slice().iter().map(|x| EncodeInput::Single(x.text.to_owned())).collect();
 
@@ -270,7 +383,7 @@ fn get_default_tokenizer_helper(slice_path: &str) -> anyhow::Result<TokenizerCer
     }
 
     Ok(TokenizerCereal {
-        slice_file: Mutex::new(slice_file),
+        slice_file: Arc::new(Mutex::new(slice_file)),
         slice_offsets: slice_offsets,
         article_lengths: article_lenghts
     })
@@ -328,6 +441,15 @@ fn get_token_slice_helper(
 
     let start_idx = context_block_size * block_idx;
     let end_idx = min(start_idx + context_block_size, page_format.tokens.len());
+
+    if start_idx >= end_idx {
+        println!("HEY THERE! I am being called with params {} {}", idx, block_idx);
+        println!("The fetched page_format at index {} has size {}", idx, page_format.tokens.len());
+        println!("The calculated start_idx and end_idx are {} and {}", start_idx, end_idx);
+
+        //println!("This ")
+        //std::intrinsics::breakpoint();
+    }
 
     Ok((page_format.tokens[start_idx..end_idx].to_vec(),
         page_format.link_embedding[start_idx..end_idx].to_vec()))
