@@ -24,12 +24,14 @@ import tokenizer_cereal
 import numpy as np
 import pandas as pd
 
+import datasets
 import torch
 from torch.utils.data import Dataset, TensorDataset
 import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
 from .dumps import wrap_open, get_filename_path, is_file
+from .vocabs import load_tokenizer
 
 
 def b2i(number_as_bytes: bytes):
@@ -538,3 +540,56 @@ class BIO:
         Return the whole dataset as a TensorDataset. 
         """
         return TensorDataset(self.input_ids, self.attention_mask, self.labels)
+
+class SQuADDataloader():
+    """
+    This is a convenience class for accessing the SQuAD dataset as a Pytorch dataloader
+    """
+
+    def __init__(self, block_size=128):
+        self.tokenizer = load_tokenizer('bert-base-uncased')
+        self.dataset = datasets.load_dataset("squad")
+
+        def encode(examples):
+            context = examples['context']
+            question = examples['question']
+
+            encoded_full_sentence = self.tokenizer.encode(context, question)
+
+            encoded_full_sentence.pad(block_size)
+
+            answers = examples['answers']
+            answer_start = answers['answer_start'] # this is a byte offset 
+            answer_end = answer_start + len(answers['text'])
+
+            answer_start_idx = -1
+            answer_end_idx = -1
+
+            # Because of [CLS] subtract the offsets by len("[CLS] ") = 6
+            for idx, (start_offset, end_offset) in enumerate(encoded_full_sentence.offsets):
+                start_offset, end_offset = start_offset - 6, end_offset - 6
+
+                if start_offset >= answer_start and answer_start_idx == -1:
+                    answer_start_idx = idx
+
+                if end_offset >= answer_end and answer_end_idx == -1:
+                    answer_end_idx = idx
+                    break
+            
+                # assign answer_end_idx to the SEP position if nothing is found
+                if encoded_full_sentence.token_to_chars(idx) == "[SEP]":
+                    answer_end_idx = idx - 1
+                    break
+
+            input_ids = encoded_full_sentence.ids
+            type_ids = encoded_full_sentence.type_ids
+            attention_mask = encoded_full_sentence.attention_mask
+
+            return {'input_ids': input_ids, 'attention_mask': attention_mask, 'token_type_ids'=type_ids}
+        
+        self.dataset.map(encode, batched=True)
+            
+
+        self.dataset.set_format(type="torch", columns=['input_ids', 'token_type_ids', 'attention_mask', 'labels'])
+
+        self.train_dataset, self.validation_dataset = self.dataset["train"], self.dataset["validation"]
