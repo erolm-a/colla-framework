@@ -10,7 +10,7 @@ from io import StringIO
 import itertools
 import os
 import pickle
-import sys
+import traceback
 from typing import List, Tuple, Dict
 
 from trec_car import read_data
@@ -331,7 +331,7 @@ class WikipediaCBOR(Dataset):
                 map(self.preprocess_page, enumerate(read_data.iter_annotations(cbor_fp))),
                 limit)
 
-        blocks_per_page = [int(np.floor(length / self.token_length))
+        blocks_per_page = [int(np.ceil(length / self.token_length))
             for length in self.tokenizer.article_lengths if length > 0]
 
         with open(self.cumulated_block_sizes_path, "wb") as fp:

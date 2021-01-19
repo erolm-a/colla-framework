@@ -15,6 +15,8 @@ extern crate crossbeam;
 
 extern crate log;
 
+extern crate blockingqueue;
+
 use simple_error::SimpleError;
 
 use std::collections::HashMap;
@@ -41,6 +43,7 @@ use paste::paste;
 use indicatif::ProgressBar;
 
 // TESTING
+use std::sync::mpsc;
 
 #[derive(FromPyObject)]
 struct PageFormat {
@@ -102,11 +105,13 @@ macro_rules! cast_errors {
 }
 
 
-#[pyclass]
+#[pyclass(unsendable)]
 struct TokenizerCereal {
     // Pytorch's threading may cause issues with the internal seek positioning of a file,
     // thus, put a simple mutex on this
-    slice_file : Arc<Mutex<std::fs::File>>,
+    // slice_file : Arc<Mutex<std::fs::File>>,
+
+    slice_files: Arc<blockingqueue::BlockingQueue<std::fs::File>>,
 
     #[pyo3(get)]
     slice_offsets: Vec<usize>,
@@ -117,6 +122,8 @@ struct TokenizerCereal {
 
 #[pymethods]
 impl TokenizerCereal {
+
+
     #[new]
     /// Create a new Tokenizer. 
     /// 
@@ -124,7 +131,10 @@ impl TokenizerCereal {
     /// :param iterator the generator to use
     /// :param estimated_len the estimated number of article to preprocess. It only has cosmetic reasons for the progress bar.
     fn new(slice_path: &str, iterator: &PyAny, estimated_len: usize, py: Python) -> TokenizerCereal {
+        const FP_POOL_SIZE: usize = 4;
+
         let article_lenghts = tokenize_from_iterator(py, iterator, slice_path, estimated_len).unwrap();
+
 
         // serialize article lengths
         {
@@ -136,9 +146,16 @@ impl TokenizerCereal {
         let toc_file = File::open(slice_path.to_owned() + ".toc").unwrap();
 
         let slice_offsets = bincode::deserialize_from(toc_file).unwrap();
+        
+        let slice_files = Arc::new(blockingqueue::BlockingQueue::new());
+
+        for _ in 1..FP_POOL_SIZE {
+            slice_files.push(File::open(slice_path).unwrap());
+        }
 
         TokenizerCereal {
-            slice_file: Arc::new(Mutex::new(slice_file)),
+            //slice_file: Arc::new(Mutex::new(slice_file)),
+            slice_files: slice_files,
             slice_offsets: slice_offsets,
             article_lengths: article_lenghts
         }
@@ -153,11 +170,11 @@ impl TokenizerCereal {
     /// :returns a pair of vectors: text tokens and link link target output.
     fn get_slice(&self, idx: usize, block_idx: usize, content_block_size: usize)
                  -> PyResult<(Vec<u32>, Vec<u32>)> {
-
-        let file_ref = Arc::clone(&self.slice_file);
-        let file = &mut file_ref.lock().unwrap();
+        let file_refs = Arc::clone(&self.slice_files);
+        let file = file_refs.pop();
+        // let file = &mut file_ref.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;
-        get_token_slice(file, &self.slice_offsets, idx, block_idx, content_block_size)
+        get_token_slice(&mut file, &self.slice_offsets, idx, block_idx, content_block_size)
     }
 
     /// Count the frequency of a tokenized slice file.
@@ -165,12 +182,12 @@ impl TokenizerCereal {
     /// :returns a frequency count dictionary. The keys are link ids and the values are the
     ///          frequency count.
     fn get_frequency_count(&self) -> PyResult<HashMap<u32, u32>> {
-        let file_ref = Arc::clone(&self.slice_file);
-        let file = &mut file_ref.lock().unwrap();
+        let file_refs = Arc::clone(&self.slice_files);
+        let file = file_refs.pop();
+        // let file = &mut file_ref.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;
-        count_frequency(file, &self.slice_offsets)
+        count_frequency(&mut file, &self.slice_offsets)
     }
-
 }
 
 /// This module provides some convenience functions for tokenizing and accessing tokenized
