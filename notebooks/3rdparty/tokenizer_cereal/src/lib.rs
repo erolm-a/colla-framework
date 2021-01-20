@@ -169,7 +169,10 @@ impl TokenizerCereal {
         let mut file = file_refs.pop();
         // let file = &mut file_ref.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;
-        get_token_slice(&mut file, &self.slice_offsets, idx, block_idx, content_block_size)
+        let output = get_token_slice(&mut file, &self.slice_offsets, idx, block_idx, content_block_size);
+        file_refs.push(file);
+
+        output
     }
 
     /// Count the frequency of a tokenized slice file.
@@ -181,7 +184,10 @@ impl TokenizerCereal {
         let mut file = file_refs.pop();
         // let file = &mut file_ref.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;
-        count_frequency(&mut file, &self.slice_offsets)
+        let output = count_frequency(&mut file, &self.slice_offsets);
+        file_refs.push(file);
+
+        output
     }
 }
 

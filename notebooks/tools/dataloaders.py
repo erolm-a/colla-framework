@@ -31,6 +31,7 @@ import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
 from .dumps import wrap_open, get_filename_path, is_file
+from .utils_squad import convert_examples_to_features
 from .vocabs import load_tokenizer
 
 
@@ -60,7 +61,7 @@ class WikipediaCBOR(Dataset):
                  partition_path: str,
                  cutoff_frequency=0.03,
                  page_lim=-1,
-                 token_length=128,
+                 token_length=512,
                  clean_cache=False,
                  repreprocess=False,
                  recount=False,
@@ -546,7 +547,12 @@ class SQuADDataloader():
     This is a convenience class for accessing the SQuAD dataset as a Pytorch dataloader
     """
 
-    def __init__(self, block_size=128):
+    def __init__(self, block_size=512):
+        """
+        Set up a Squad dataloader pipeline.
+
+        :param block_size The model's block size. We drop questions that do not fit the model.
+        """
         self.tokenizer = load_tokenizer('bert-base-uncased')
         self.dataset = datasets.load_dataset("squad")
 
@@ -556,7 +562,7 @@ class SQuADDataloader():
 
             encoded_full_sentences = [self.tokenizer.encode(context, question)
                     for context, question in zip(contexts, questions)]
-
+            
             for sentence in encoded_full_sentences:
                 sentence.pad(block_size)
 
@@ -564,7 +570,8 @@ class SQuADDataloader():
             # TODO: tag unanswerable questions with -1
             answers_start = [answer['answer_start'][0] for answer in answers] # this is a byte offset
 
-            answers_end = [answer_start + len(answer['text'][0]) for answer, answer_start in zip(answers, answers_start)]
+            answers_end = [answer_start + len(answer['text'][0]) for answer, answer_start in
+                zip(answers, answers_start)]
 
             answer_start_idx = [-1] * len(answers_start)
             answer_end_idx = [-1] * len(answers_end)
