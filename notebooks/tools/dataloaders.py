@@ -551,45 +551,59 @@ class SQuADDataloader():
         self.dataset = datasets.load_dataset("squad")
 
         def encode(examples):
-            context = examples['context']
-            question = examples['question']
+            contexts = examples['context']
+            questions = examples['question']
 
-            encoded_full_sentence = self.tokenizer.encode(context, question)
+            encoded_full_sentences = [self.tokenizer.encode(context, question)
+                    for context, question in zip(contexts, questions)]
 
-            encoded_full_sentence.pad(block_size)
+            for sentence in encoded_full_sentences:
+                sentence.pad(block_size)
 
             answers = examples['answers']
-            answer_start = answers['answer_start'] # this is a byte offset 
-            answer_end = answer_start + len(answers['text'])
+            # TODO: tag unanswerable questions with -1
+            answers_start = [answer['answer_start'][0] for answer in answers] # this is a byte offset
 
-            answer_start_idx = -1
-            answer_end_idx = -1
+            answers_end = [answer_start + len(answer['text'][0]) for answer, answer_start in zip(answers, answers_start)]
 
-            # Because of [CLS] subtract the offsets by len("[CLS] ") = 6
-            for idx, (start_offset, end_offset) in enumerate(encoded_full_sentence.offsets):
-                start_offset, end_offset = start_offset - 6, end_offset - 6
+            answer_start_idx = [-1] * len(answers_start)
+            answer_end_idx = [-1] * len(answers_end)
 
-                if start_offset >= answer_start and answer_start_idx == -1:
-                    answer_start_idx = idx
+            for answer_idx, (encoded_sentence, answer_start, answer_end) in \
+                enumerate(zip(encoded_full_sentences, answers_start, answers_end)):
+                for idx, (start_offset, end_offset) in enumerate(encoded_sentence.offsets):
+                    # Separation tokens have 0-len span.
+                    if start_offset == end_offset:
+                        continue
 
-                if end_offset >= answer_end and answer_end_idx == -1:
-                    answer_end_idx = idx
-                    break
-            
-                # assign answer_end_idx to the SEP position if nothing is found
-                if encoded_full_sentence.token_to_chars(idx) == "[SEP]":
-                    answer_end_idx = idx - 1
-                    break
+                    if start_offset >= answer_start and answer_start_idx[answer_idx] == -1:
+                        answer_start_idx[answer_idx] = idx
 
-            input_ids = encoded_full_sentence.ids
-            type_ids = encoded_full_sentence.type_ids
-            attention_mask = encoded_full_sentence.attention_mask
+                    if end_offset >= answer_end and answer_end_idx[answer_idx] == -1:
+                        answer_end_idx[answer_idx] = idx
+                        break
 
-            return {'input_ids': input_ids, 'attention_mask': attention_mask, 'token_type_ids'=type_ids}
-        
-        self.dataset.map(encode, batched=True)
-            
+                    # assign answer_end_idx to the SEP position if nothing is found
+                    if encoded_sentence.token_to_chars(idx) == "[SEP]":
+                        answer_end_idx[answer_idx] = idx - 1
+                        break
 
-        self.dataset.set_format(type="torch", columns=['input_ids', 'token_type_ids', 'attention_mask', 'labels'])
+            input_ids = [x.ids for x in encoded_full_sentences]
+            type_ids = [x.type_ids for x in encoded_full_sentences]
+            attention_mask = [x.attention_mask for x in encoded_full_sentences]
 
-        self.train_dataset, self.validation_dataset = self.dataset["train"], self.dataset["validation"]
+            return {'input_ids': input_ids, 'attention_mask': attention_mask,
+                    'token_type_ids': type_ids, 'answer_start': answer_start_idx,
+                    'answer_end': answer_end_idx}
+
+        self.tokenized_dataset = self.dataset.map(encode, batched=True)
+        self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'token_type_ids', 
+                                'attention_mask', 'answer_start', 'answer_end'])
+
+    @property
+    def train_dataset(self):
+        return self.tokenized_dataset["train"]
+    
+    @property
+    def validation_dataset(self):
+        return self.tokenized_dataset["validation"]

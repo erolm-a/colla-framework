@@ -42,9 +42,6 @@ use paste::paste;
 
 use indicatif::ProgressBar;
 
-// TESTING
-use std::sync::mpsc;
-
 #[derive(FromPyObject)]
 struct PageFormat {
     // a page identifier
@@ -120,10 +117,10 @@ struct TokenizerCereal {
     article_lengths: Vec<u32>
 }
 
+const FP_POOL_SIZE: usize = 4;
+
 #[pymethods]
 impl TokenizerCereal {
-
-
     #[new]
     /// Create a new Tokenizer. 
     /// 
@@ -131,10 +128,8 @@ impl TokenizerCereal {
     /// :param iterator the generator to use
     /// :param estimated_len the estimated number of article to preprocess. It only has cosmetic reasons for the progress bar.
     fn new(slice_path: &str, iterator: &PyAny, estimated_len: usize, py: Python) -> TokenizerCereal {
-        const FP_POOL_SIZE: usize = 4;
 
         let article_lenghts = tokenize_from_iterator(py, iterator, slice_path, estimated_len).unwrap();
-
 
         // serialize article lengths
         {
@@ -142,7 +137,7 @@ impl TokenizerCereal {
             bincode::serialize_into(article_lenghts_file, &article_lenghts).unwrap();
         }
 
-        let slice_file = File::open(slice_path).unwrap();
+        // let slice_file = File::open(slice_path).unwrap();
         let toc_file = File::open(slice_path.to_owned() + ".toc").unwrap();
 
         let slice_offsets = bincode::deserialize_from(toc_file).unwrap();
@@ -171,7 +166,7 @@ impl TokenizerCereal {
     fn get_slice(&self, idx: usize, block_idx: usize, content_block_size: usize)
                  -> PyResult<(Vec<u32>, Vec<u32>)> {
         let file_refs = Arc::clone(&self.slice_files);
-        let file = file_refs.pop();
+        let mut file = file_refs.pop();
         // let file = &mut file_ref.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;
         get_token_slice(&mut file, &self.slice_offsets, idx, block_idx, content_block_size)
@@ -182,8 +177,8 @@ impl TokenizerCereal {
     /// :returns a frequency count dictionary. The keys are link ids and the values are the
     ///          frequency count.
     fn get_frequency_count(&self) -> PyResult<HashMap<u32, u32>> {
-        let file_refs = Arc::clone(&self.slice_files);
-        let file = file_refs.pop();
+        let file_refs = Arc::clone(&self. slice_files);
+        let mut file = file_refs.pop();
         // let file = &mut file_ref.lock().unwrap();
         file.seek(SeekFrom::Start(0))?;
         count_frequency(&mut file, &self.slice_offsets)
@@ -390,7 +385,6 @@ fn tokenize_from_iterator_helper(
 
 fn get_default_tokenizer_helper(slice_path: &str) -> anyhow::Result<TokenizerCereal>
 {
-    let slice_file = File::open(slice_path)?;
 
     let article_lenghts : Vec<u32>;
     let slice_offsets : Vec<usize>;
@@ -405,8 +399,14 @@ fn get_default_tokenizer_helper(slice_path: &str) -> anyhow::Result<TokenizerCer
         slice_offsets = bincode::deserialize_from(slice_toc_file)?;
     }
 
+
+    let slice_files = Arc::new(blockingqueue::BlockingQueue::new());
+    for _ in 1..FP_POOL_SIZE {
+        slice_files.push(File::open(slice_path).unwrap());
+    }
+
     Ok(TokenizerCereal {
-        slice_file: Arc::new(Mutex::new(slice_file)),
+        slice_files: slice_files,
         slice_offsets: slice_offsets,
         article_lengths: article_lenghts
     })

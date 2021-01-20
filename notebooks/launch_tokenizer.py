@@ -3,7 +3,7 @@
 FIXME: delete me as soon as debugging is over
 """
 
-from tools.dataloaders import WikipediaCBOR
+from tools.dataloaders import WikipediaCBOR, SQuADDataloader
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from itertools import zip_longest # for Python 3.x
@@ -22,6 +22,7 @@ def get_slices(wikipedia_cbor, slices):
 
 
 def main():
+    """
     wikipedia_cbor = WikipediaCBOR("wikipedia/car-wiki2020-01-01/enwiki2020.cbor",
                                     "wikipedia/car-wiki2020-01-01/partitions",
                                     #page_lim=1000, repreprocess=True
@@ -62,5 +63,14 @@ def main():
 
 
     # wikipedia_cbor.tokenizer.
+    """
+
+    squad_dataset = SQuADDataloader()
+    train_dataset = squad_dataset.train_dataset
+
+    for b in train_dataset:
+        print(b)
+        break
+    
 if __name__ == "__main__":
     main()
