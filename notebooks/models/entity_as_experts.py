@@ -219,11 +219,10 @@ class TokenPred(Module):
         return self.cls(*args, **kwargs)
 
 
-class Pretraining(Module):
+class EntityAsExperts(Module):
     """
-    This is a mere wrapper used to pretrain contemporarely a bio classifier and EntityMemory.
-
-    We also need TokenPred but we'll ignore it at the moment.
+    This is the Entity As Experts implementation. Similarly to Transformers' Bert,
+    task-specific heads should be built on top of this class.
     """
 
     def __init__(
@@ -321,7 +320,7 @@ class EaEForQuestionAnswering(Module):
     """
 
     def __init__(self,
-                 eae: Pretraining):
+                 eae: EntityAsExperts):
         """
         :param pretrained_model the pretrained model.
         """

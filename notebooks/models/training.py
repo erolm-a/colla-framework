@@ -18,6 +18,7 @@ from .device import DEVICE
 
 MAX_GRAD_NORM = 1.0
 
+# pylint: disable(too-many-arguments)
 def train_model(
     model: Module,
     train_dataloader: DataLoader,
@@ -79,3 +80,4 @@ def train_model(
         validation_losses.append(avg_validation_loss)
         tqdm.write(f"Average eval loss at epoch {epoch}: {avg_validation_loss}")
 
+    return avg_train_loss, avg_validation_loss
