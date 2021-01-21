@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Current File",
+            "name": "Python: launch_tokenizer.py",
             "type": "python",
             "request": "launch",
             "program": "launch_tokenizer.py",
@@ -14,7 +14,7 @@
             "preLaunchTask": "Launch maturin (release build)"
         },
         {
-            "name": "(gdb) Launch",
+            "name": "(lldb) Launch",
             "type": "lldb",
             "request": "launch",
             "program": "~/.pyenv/versions/colla/bin/python",
@@ -24,8 +24,33 @@
             "preLaunchTask": "Launch maturin",
             "cwd": "${workspaceFolder}/notebooks",
             "env": {
-                "RUST_BACKTRACE": "1"
-            }
-        }
+            },
+            "sourceLanguages": ["rust, python"]
+        },
+        {
+            "name": "(lldb) Run Tests",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--no-default-features",
+                    "--lib"
+                ],
+                 "filter": {
+                    "name": "tokenizer_cereal",
+                    "kind": "lib"
+                }
+            },
+            "relativePathBase": "${workspaceFolder}/notebooks/3rdparty/tokenizer_cereal",
+            // "preLaunchTask": "Launch maturin",
+            "cwd": "${workspaceFolder}/notebooks/3rdparty/tokenizer_cereal",
+            "env": {
+                "RUST_BACKTRACE": "1",
+                "DATA_DIR": "/home/erolm_a/Documenti/Work/knowledge-glue/notebooks/data"
+            },
+            "sourceLanguages": ["rust", "python"]
+        },
     ]
 }

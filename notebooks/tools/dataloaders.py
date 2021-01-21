@@ -10,6 +10,7 @@ from io import StringIO
 import itertools
 import os
 import pickle
+import traceback
 from typing import List, Tuple, Dict
 
 from trec_car import read_data
@@ -23,12 +24,14 @@ import tokenizer_cereal
 import numpy as np
 import pandas as pd
 
+import datasets
 import torch
 from torch.utils.data import Dataset, TensorDataset
 import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
 from .dumps import wrap_open, get_filename_path, is_file
+from .vocabs import load_tokenizer
 
 
 def b2i(number_as_bytes: bytes):
@@ -57,7 +60,7 @@ class WikipediaCBOR(Dataset):
                  partition_path: str,
                  cutoff_frequency=0.03,
                  page_lim=-1,
-                 token_length=128,
+                 token_length=512,
                  clean_cache=False,
                  repreprocess=False,
                  recount=False,
@@ -325,13 +328,13 @@ class WikipediaCBOR(Dataset):
         with open(self.cbor_path, "rb") as cbor_fp:
             if getattr(self, "tokenizer", None) is not None:
                 del self.tokenizer # ensure the destructor is called (?)
- 
+
             self.tokenizer = tokenizer_cereal.TokenizerCereal(self.rust_cereal_path,
                 map(self.preprocess_page, enumerate(read_data.iter_annotations(cbor_fp))),
                 limit)
 
-        blocks_per_page = [int(np.floor(length / self.token_length))
-            for length in  self.tokenizer.article_lengths]
+        blocks_per_page = [int(np.ceil(length / self.token_length))
+            for length in self.tokenizer.article_lengths if length > 0]
 
         with open(self.cumulated_block_sizes_path, "wb") as fp:
             self.cumulated_block_size = np.cumsum(blocks_per_page)
@@ -537,3 +540,76 @@ class BIO:
         Return the whole dataset as a TensorDataset. 
         """
         return TensorDataset(self.input_ids, self.attention_mask, self.labels)
+
+class SQuADDataloader():
+    """
+    This is a convenience class for accessing the SQuAD dataset as a Pytorch dataloader
+    """
+
+    def __init__(self, block_size=512):
+        """
+        Set up a Squad dataloader pipeline.
+
+        :param block_size The model's block size. We drop questions that do not fit the model.
+        """
+        self.tokenizer = load_tokenizer('bert-base-uncased')
+        self.dataset = datasets.load_dataset("squad")
+
+        def encode(examples):
+            contexts = examples['context']
+            questions = examples['question']
+
+            encoded_full_sentences = [self.tokenizer.encode(context, question)
+                    for context, question in zip(contexts, questions)]
+            
+            for sentence in encoded_full_sentences:
+                sentence.pad(block_size)
+
+            answers = examples['answers']
+            # TODO: tag unanswerable questions with -1
+            answers_start = [answer['answer_start'][0] for answer in answers] # this is a byte offset
+
+            answers_end = [answer_start + len(answer['text'][0]) for answer, answer_start in
+                zip(answers, answers_start)]
+
+            answer_start_idx = [-1] * len(answers_start)
+            answer_end_idx = [-1] * len(answers_end)
+
+            for answer_idx, (encoded_sentence, answer_start, answer_end) in \
+                enumerate(zip(encoded_full_sentences, answers_start, answers_end)):
+                for idx, (start_offset, end_offset) in enumerate(encoded_sentence.offsets):
+                    # Separation tokens have 0-len span.
+                    if start_offset == end_offset:
+                        continue
+
+                    if start_offset >= answer_start and answer_start_idx[answer_idx] == -1:
+                        answer_start_idx[answer_idx] = idx
+
+                    if end_offset >= answer_end and answer_end_idx[answer_idx] == -1:
+                        answer_end_idx[answer_idx] = idx
+                        break
+
+                    # assign answer_end_idx to the SEP position if nothing is found
+                    if encoded_sentence.token_to_chars(idx) == "[SEP]":
+                        answer_end_idx[answer_idx] = idx - 1
+                        break
+
+            input_ids = [x.ids for x in encoded_full_sentences]
+            type_ids = [x.type_ids for x in encoded_full_sentences]
+            attention_mask = [x.attention_mask for x in encoded_full_sentences]
+
+            return {'input_ids': input_ids, 'attention_mask': attention_mask,
+                    'token_type_ids': type_ids, 'answer_start': answer_start_idx,
+                    'answer_end': answer_end_idx}
+
+        self.tokenized_dataset = self.dataset.map(encode, batched=True)
+        self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'token_type_ids', 
+                                'attention_mask', 'answer_start', 'answer_end'])
+
+    @property
+    def train_dataset(self):
+        return self.tokenized_dataset["train"]
+    
+    @property
+    def validation_dataset(self):
+        return self.tokenized_dataset["validation"]

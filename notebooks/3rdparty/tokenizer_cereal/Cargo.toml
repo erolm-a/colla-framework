@@ -9,11 +9,13 @@ edition = "2018"
 [lib]
 name = "tokenizer_cereal"
 crate-type = ["cdylib"]
-# features = ["extension-module"]
+
+[features]
+extension-module = ["pyo3/extension-module"]
+default = ["extension-module"]
 
 [dependencies.pyo3]
 version="0.12.4"
-features = ["extension-module"]
 
 [dependencies]
 tokenizers = "*"
@@ -24,6 +26,9 @@ simple-error = "*"
 itertools="0.9.0"
 paste="1.0"
 indicatif="*"
+crossbeam="*"
+log="0.4.13"
+blockingqueue="0.1.1"
 
 [profile.dev]
 # enable moderate optimizations while keeping debug mode on
