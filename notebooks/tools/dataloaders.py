@@ -31,7 +31,6 @@ import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
 from .dumps import wrap_open, get_filename_path, is_file
-from .utils_squad import convert_examples_to_features
 from .vocabs import load_tokenizer
 
 
