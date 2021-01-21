@@ -2,7 +2,7 @@
 A set of training helpers
 """
 
-from typing import Callable
+from typing import Callable, Optional
 
 
 import torch
@@ -26,7 +26,7 @@ def train_model(
     optimizer: Optimizer,
     scheduler: LambdaLR,
     epochs: int,
-    metric: Callable):
+    metric: Optional[Callable]):
     """
     Train a model.
 
@@ -42,10 +42,10 @@ def train_model(
         total_loss = 0
 
         for batch in tqdm(train_dataloader):
-            elements = [elem.to(DEVICE) for elem in load_from_dataloader(batch)]
+            inputs = [elem.to(DEVICE) for elem in load_from_dataloader(batch)]
 
             model.zero_grad()
-            loss, *outputs = model(*elements)
+            loss, *_ = model(*inputs)
             loss.backward()
             total_loss += loss.item()
 
@@ -65,16 +65,17 @@ def train_model(
         total_loss = 0
 
         for batch in tqdm(validation_dataloader):
-            elements = [elem.to(DEVICE) for elem in load_from_dataloader(batch)]
+            inputs = [elem.to(DEVICE) for elem in load_from_dataloader(batch)]
+
 
             with torch.no_grad():
-                loss, *outputs = model(*elements)
+                loss, *outputs = model(*inputs)
                 total_loss += loss.item()
+
+                if metric:
+                    metric(inputs, outputs)
 
         avg_validation_loss = total_loss / len(validation_dataloader)
         validation_losses.append(avg_validation_loss)
         tqdm.write(f"Average eval loss at epoch {epoch}: {avg_validation_loss}")
 
-    if metric:
-        pass
-        # TODO: handle this
