@@ -142,6 +142,13 @@ class WikipediaCBOR(IterableDataset):
         self.end_page_idx = len(self.blocks_per_page)
         self.cur_block = 0
 
+        # length
+        self.length = sum(self.blocks_per_page)
+
+
+    def __len__(self):
+        return self.length
+
     def extract_readable_key_titles(self):
         """
         Build a list of human-readable names of CBOR entries.
