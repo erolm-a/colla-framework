@@ -148,19 +148,9 @@ impl TokenizerCereal {
         }
     }
 
-    /// Get a chosen slice batch from a tokenized slice file.
-    /// :param idx the index of the article to use according to the previously generated
-    ///        TOC (whose path is cereal_path + \".toc\").
-    /// :param block_idx the block idx. The resulting block may have a smaller
-    ///        size than the prescribed block size (true for last blocks).
-    /// :param content_block_size the size of the blocks
+    /// Get the next file slice from a tokenized slice file.
+    /// No padding or truncation is performed - the caller is expected to do this.
     /// :returns a pair of vectors: text tokens and link link target output.
-    fn get_slice(&mut self, idx: usize, block_idx: usize, content_block_size: usize)
-                 -> PyResult<(Vec<u32>, Vec<u32>)> {
-        //file.seek(SeekFrom::Start(0))?;
-        get_token_slice(&mut self.slice_file, &self.slice_offsets, idx, block_idx, content_block_size)
-    }
-
     fn get_next_slice(&mut self)
                 -> PyResult<(Vec<u32>, Vec<u32>)> {
 
@@ -286,12 +276,6 @@ cast_errors!(tokenize_from_iterator(py: Python, generator: &PyAny, output_path: 
 
 cast_errors!(PYFUNC get_default_tokenizer(slice_path: &str) -> TokenizerCereal);
 
-
-cast_errors!(get_token_slice(input_file: &mut File, // required mutability for seeks
-    slice_offsets: &Vec<usize>,
-    idx: usize,
-    block_idx: usize,
-    context_block_size: usize) -> (Vec<u32>, Vec<u32>));
 
 cast_errors!(get_next_token_slice(input_file: &File) -> (Vec<u32>, Vec<u32>));
 
@@ -443,35 +427,6 @@ fn write_slices<T: Write + Seek>(
     // bincode::serialize_into(output_file_tocs_stream, &offsets)?;
     lenghts.extend(blocks);
     Ok(())
-}
-
-fn get_token_slice_helper(
-    input_file: &mut File, // required mutability for seeks
-    slice_offsets: &Vec<usize>,
-    idx: usize,
-    block_idx: usize,
-    context_block_size: usize,
-) -> anyhow::Result<(Vec<u32>, Vec<u32>)> {
-    input_file.seek(SeekFrom::Start(slice_offsets[idx] as u64))?;
-
-    let mut buf: Vec<u8> = vec![0_u8; (slice_offsets[idx+1] - slice_offsets[idx]) as usize];
-    input_file.read_exact(&mut buf)?;
-    let page_format : PageFormatOutput = bincode::deserialize(&buf)?;
-
-    let start_idx = context_block_size * block_idx;
-    let end_idx = min(start_idx + context_block_size, page_format.tokens.len());
-
-    if start_idx >= end_idx {
-        println!("HEY THERE! I am being called with params {} {}", idx, block_idx);
-        println!("The fetched page_format at index {} has size {}", idx, page_format.tokens.len());
-        println!("The calculated start_idx and end_idx are {} and {}", start_idx, end_idx);
-
-        //println!("This ")
-        //std::intrinsics::breakpoint();
-    }
-
-    Ok((page_format.tokens[start_idx..end_idx].to_vec(),
-        page_format.link_embedding[start_idx..end_idx].to_vec()))
 }
 
 fn get_next_token_slice_helper(
