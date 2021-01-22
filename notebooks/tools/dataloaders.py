@@ -1,6 +1,7 @@
 '''
 Convenience tools for parsing the Wikipedia CBOR structure and a number of evaluation datasets.
 '''
+import bisect
 from collections import defaultdict, namedtuple
 from copy import deepcopy
 from io import StringIO
@@ -143,7 +144,8 @@ class WikipediaCBOR(IterableDataset):
         self.cur_block = 0
 
         # length
-        self.length = sum(self.blocks_per_page)
+        self.cumulated_block_size = np.cumsum(self.blocks_per_page)
+        self.length = self.cumulated_block_size[-1]
 
 
     def __len__(self):
@@ -348,6 +350,39 @@ class WikipediaCBOR(IterableDataset):
 
         return iter(self._getitem())
 
+    def convert_idx_to_page_block(self, idx: int) -> Tuple[int, int]:
+        cumulated = self.cumulated_block_size
+        page_idx = bisect.bisect_right(cumulated, idx)
+        page_block_nums = cumulated[page_idx] - \
+            (cumulated[page_idx-1] if page_idx > 0 else 0)
+        block_offset = idx - (cumulated[page_idx-1] if page_idx > 0 else 0)
+
+        if page_block_nums == 0:
+            page_idx = 0
+            block_offset = 0 
+
+        return page_idx, block_offset
+
+
+    def process_tokenizer_output(self, toks: List[int], links: List[int]):
+        links = [self.key_restrictor.get(x, 0) for x in links]
+
+        masked_toks, masked_links, masked_bio = self.get_boundaries_masked(
+            toks, links)
+
+        toks, links, masked_toks, masked_links, masked_bio = [
+            torch.LongTensor(pad_sequences([x], maxlen=self.token_length,
+                                            dtype="long", value=0.0,
+                                            truncating="post", padding="post")[0])
+            .squeeze() for x in (toks, links, masked_toks,
+                                    masked_links, masked_bio)
+        ]
+
+        # attend everywhere it is not padded
+        attns = torch.where(toks != 0, 1, 0)
+
+        return (masked_toks, toks, masked_links, links, masked_bio, attns)
+
     def _getitem(self):
         """
         Return a tensor for the given index.
@@ -380,26 +415,30 @@ class WikipediaCBOR(IterableDataset):
                                      self.token_length: (self.cur_block + 1)*self.token_length]
             links = self.last_page[1][self.cur_block *
                                       self.token_length: (self.cur_block + 1)*self.token_length]
+            
 
-            links = [self.key_restrictor.get(x, 0) for x in links]
-
-            masked_toks, masked_links, masked_bio = self.get_boundaries_masked(
-                toks, links)
-
-            toks, links, masked_toks, masked_links, masked_bio = [
-                torch.LongTensor(pad_sequences([x], maxlen=self.token_length,
-                                               dtype="long", value=0.0,
-                                               truncating="post", padding="post")[0])
-                .squeeze() for x in (toks, links, masked_toks,
-                                     masked_links, masked_bio)
-            ]
-
-            # attend everywhere it is not padded
-            attns = torch.where(toks != 0, 1, 0)
+            masked_toks, toks, masked_links, links, masked_bio, attns = \
+                self.process_tokenizer_output(toks, links)
 
             self.cur_block += 1
 
             yield (masked_toks, toks, masked_links, links, masked_bio, attns)
+    
+    def __getitem__(self, idx):
+        """
+        Provide an interface for a map-style, O(log(N)) approach for accessing a random block
+        """
+
+        if not self.tokenizer:
+            self.tokenizer = tokenizer_cereal.get_default_tokenizer(
+                self.rust_cereal_path)
+
+        page_idx, block_offset = self.convert_idx_to_page_block(idx)
+
+        toks, links = self.tokenizer.get_slice(page_idx, block_offset,
+                            self.token_length)
+        
+        return self.process_tokenizer_output(toks, links)
 
 
 class SQuADDataloader():

@@ -24,6 +24,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::cmp::*;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokenizers::models::wordpiece::WordPiece;
@@ -102,11 +103,7 @@ macro_rules! cast_errors {
 
 #[pyclass]
 struct TokenizerCereal {
-    // Pytorch's threading may cause issues with the internal seek positioning of a file,
-    // thus, put a simple mutex on this
     slice_file : std::fs::File,
-
-    // slice_files: Arc<blockingqueue::BlockingQueue<std::fs::File>>,
 
     #[pyo3(get)]
     slice_offsets: Vec<usize>,
@@ -148,12 +145,23 @@ impl TokenizerCereal {
         }
     }
 
-    /// Get the next file slice from a tokenized slice file.
-    /// No padding or truncation is performed - the caller is expected to do this.
+    /// Get a chosen slice batch from a tokenized slice file.
+    /// This is the go-to method for implementing a map-based dataloader.
+    /// :param idx the index of the article to use according to the previously generated
+    ///        TOC (whose path is cereal_path + \".toc\").
+    /// :param block_idx the block idx. The resulting block may have a smaller
+    ///        size than the prescribed block size (true for last blocks).
+    /// :param content_block_size the size of the blocks
+    /// :returns a pair of vectors: text tokens and link link target output.
+    fn get_slice(&mut self, idx: usize, block_idx: usize, content_block_size: usize)
+                 -> PyResult<(Vec<u32>, Vec<u32>)> {
+        get_token_slice(&mut self.slice_file, &self.slice_offsets, idx, block_idx, content_block_size)
+    }
+
+    /// Get the next slice batch from a tokenized slice file.
     /// :returns a pair of vectors: text tokens and link link target output.
     fn get_next_slice(&mut self)
                 -> PyResult<(Vec<u32>, Vec<u32>)> {
-
         get_next_token_slice(&self.slice_file)
     }
 
@@ -185,13 +193,13 @@ mod tests {
 
     const PATH: &str = "/wikipedia/car-wiki2020-01-01/partitions/test_rust.cereal";
 
-    fn get_tokenizer() -> Arc<TokenizerCereal> {
+    fn get_tokenizer() -> Arc<Mutex<TokenizerCereal>> {
         let cereal_path = match std::env::var("DATA_DIR") {
             Ok(val) => val + PATH,
             Err(_) => "data".to_owned() + PATH
         };
 
-        Arc::new(get_default_tokenizer_helper(&cereal_path).unwrap())
+        Arc::new(Mutex::new(get_default_tokenizer_helper(&cereal_path).unwrap()))
     }
 
     #[test]
@@ -201,7 +209,7 @@ mod tests {
         let tokenizer = get_tokenizer();
 
         for (a, b) in reqs {
-            tokenizer.get_slice(a, 128, b).unwrap();
+            tokenizer.lock().unwrap().get_slice(a, 128, b).unwrap();
         }
     }
 
@@ -237,7 +245,7 @@ mod tests {
             Err(_) => "data".to_owned() + PATH
         };
 
-        let tokenizer = Arc::new(get_default_tokenizer_helper(&cereal_path).unwrap());
+        let tokenizer = get_tokenizer();
 
         let (s, r) = crossbeam::channel::unbounded();
 
@@ -254,7 +262,7 @@ mod tests {
 
                 scope.spawn(move |_| {
                     for (a, b) in ranges.iter() {
-                        results.push(shared_tokenizer.get_slice(*a, 128, *b).unwrap());
+                        results.push(shared_tokenizer.lock().unwrap().get_slice(*a, 128, *b).unwrap());
                     }
 
                     s2.send(results).unwrap();
@@ -276,6 +284,12 @@ cast_errors!(tokenize_from_iterator(py: Python, generator: &PyAny, output_path: 
 
 cast_errors!(PYFUNC get_default_tokenizer(slice_path: &str) -> TokenizerCereal);
 
+
+cast_errors!(get_token_slice(input_file: &mut File, // required mutability for seeks
+    slice_offsets: &Vec<usize>,
+    idx: usize,
+    block_idx: usize,
+    context_block_size: usize) -> (Vec<u32>, Vec<u32>));
 
 cast_errors!(get_next_token_slice(input_file: &File) -> (Vec<u32>, Vec<u32>));
 
@@ -427,6 +441,35 @@ fn write_slices<T: Write + Seek>(
     // bincode::serialize_into(output_file_tocs_stream, &offsets)?;
     lenghts.extend(blocks);
     Ok(())
+}
+
+fn get_token_slice_helper(
+    input_file: &mut File, // required mutability for seeks
+    slice_offsets: &Vec<usize>,
+    idx: usize,
+    block_idx: usize,
+    context_block_size: usize,
+) -> anyhow::Result<(Vec<u32>, Vec<u32>)> {
+    input_file.seek(SeekFrom::Start(slice_offsets[idx] as u64))?;
+
+    let mut buf: Vec<u8> = vec![0_u8; (slice_offsets[idx+1] - slice_offsets[idx]) as usize];
+    input_file.read_exact(&mut buf)?;
+    let page_format : PageFormatOutput = bincode::deserialize(&buf)?;
+
+    let start_idx = context_block_size * block_idx;
+    let end_idx = min(start_idx + context_block_size, page_format.tokens.len());
+
+    if start_idx >= end_idx {
+        println!("HEY THERE! I am being called with params {} {}", idx, block_idx);
+        println!("The fetched page_format at index {} has size {}", idx, page_format.tokens.len());
+        println!("The calculated start_idx and end_idx are {} and {}", start_idx, end_idx);
+
+        //println!("This ")
+        //std::intrinsics::breakpoint();
+    }
+
+    Ok((page_format.tokens[start_idx..end_idx].to_vec(),
+        page_format.link_embedding[start_idx..end_idx].to_vec()))
 }
 
 fn get_next_token_slice_helper(
