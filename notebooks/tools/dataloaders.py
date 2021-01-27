@@ -23,7 +23,7 @@ import numpy as np
 
 import datasets
 import torch
-from torch.utils.data import IterableDataset
+from torch.utils.data import Dataset
 import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
@@ -41,7 +41,7 @@ def b2i(number_as_bytes: bytes):
 PageFormat = namedtuple("PageFormat", ["id", "text", "link_mentions"])
 
 
-class WikipediaCBOR(IterableDataset):
+class WikipediaCBOR(Dataset):
     """
     Dataset for Wikipedia loader.
 
