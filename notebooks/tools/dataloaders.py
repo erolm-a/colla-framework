@@ -446,6 +446,24 @@ class SQuADDataloader():
     This is a convenience class for accessing the SQuAD dataset as a Pytorch dataloader
     """
 
+    # Fancy getitem to work with samplers
+
+    class SquadDataset(Dataset):
+        def __init__(self, dataset):
+            self.dataset = dataset
+        
+        def __len__(self):
+            return len(self.dataset)
+        
+        def __getitem__(self, idx):
+            if type(idx) == list or type(idx) == torch.tensor:
+                return [self.dataset[i] for i in idx]
+            else:
+                # TODO: this is very fragile
+                if type(idx) == np.int64:
+                    idx = idx.item()
+                return self.dataset[idx]
+
     def __init__(self, block_size=512):
         """
         Set up a Squad dataloader pipeline.
@@ -504,13 +522,36 @@ class SQuADDataloader():
                     'answer_end': answer_end_idx}
 
         self.tokenized_dataset = self.dataset.map(encode, batched=True)
-        self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'token_type_ids',
-                                                                 'attention_mask', 'answer_start', 'answer_end'])
+        #self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'token_type_ids',
+        #                                                         'attention_mask', 'answer_start',
+        #                                                         'answer_end'])
 
     @property
     def train_dataset(self):
-        return self.tokenized_dataset["train"]
+        return SQuADDataloader.SquadDataset(self.tokenized_dataset["train"])
 
     @property
     def validation_dataset(self):
-        return self.tokenized_dataset["validation"]
+        return SQuADDataloader.SquadDataset(self.tokenized_dataset["validation"])
+
+    def reconstruct_sentences(
+                             self,
+                             input_ids_list: List[List[int]],
+                             answers_start: List[int],
+                             answers_end: List[int]
+                             ) -> List[str]:
+        """
+        Reconstruct the sentences given a list of token ids and a span.
+        Unfortunately there is no way to do that efficiently given that spans are ragged.
+
+        :param input_ids_list
+        :param answers_start
+        :param answers_end
+
+        :returns a list of strings
+        """
+
+        answers = [input_ids[answer_start:answer_end+1] for input_ids, answer_start, answer_end 
+            in zip(input_ids_list, answers_start, answers_end)]
+
+        return self.tokenizer.decode_batch(answers)

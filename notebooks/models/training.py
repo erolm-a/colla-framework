@@ -2,9 +2,9 @@
 A set of training helpers
 """
 
-from typing import Callable, Optional
+from typing import Callable, Optional, List, Tuple, Any
 
-
+import deprecated
 import torch
 from torch.nn import Module
 from torch.nn.utils import clip_grad_norm_
@@ -15,15 +15,14 @@ from transformers import AdamW, get_linear_schedule_with_warmup
 
 from tqdm import tqdm
 
+from tools.dumps import get_filename_path
+
 from .device import DEVICE
 
-from tools.dumps import get_filename_path
 
 MAX_GRAD_NORM = 1.0
 
 # pylint: disable(too-many-arguments)
-
-
 def train_model(
         model: Module,
         train_dataloader: DataLoader,
@@ -32,11 +31,23 @@ def train_model(
         optimizer: Optimizer,
         scheduler: LambdaLR,
         epochs: int,
-        metric: Optional[Callable]):
+        metric: Optional[Callable[[Tuple[List[torch.tensor]]], Any]]):
     """
     Train a model.
 
     :param model a Model whose forward returns a tuple with AT LEAST 2 elements.
+    :param train_dataloader a dataloader
+    :param validation_dataloader a dataloader for validation
+    :param load_from_dataloader a callable that returns a pair (model_params, metric_params).
+        The idea is that model_params is entirely made of pytorch tensors that can be moved to
+        the gpu, while metric_params contains the parameters for the metric.
+
+    :param optimizer
+    :param scheduler
+    :param epochs
+    :param metric if provided, a callable that invokes a metric (typically a Dataset.Metric).
+           It will be called with params (model_params + metric_params, outputs) where outputs
+           are the outputs of the model.
     """
 
     train_losses = []
@@ -48,7 +59,8 @@ def train_model(
         total_loss = 0
 
         for batch in tqdm(train_dataloader):
-            inputs = [elem.to(DEVICE) for elem in load_from_dataloader(batch)]
+            model_input, _ = load_from_dataloader(batch)
+            inputs = [elem.to(DEVICE) for elem in model_input]
 
             model.zero_grad()
             loss, *_ = model(*inputs)
@@ -71,14 +83,15 @@ def train_model(
         total_loss = 0
 
         for batch in tqdm(validation_dataloader):
-            inputs = [elem.to(DEVICE) for elem in load_from_dataloader(batch)]
+            model_inputs, metric_inputs = load_from_dataloader(batch)
+            inputs = [elem.to(DEVICE) for elem in model_inputs]
 
             with torch.no_grad():
                 loss, *outputs = model(*inputs)
                 total_loss += loss.item()
 
                 if metric:
-                    metric(inputs, outputs)
+                    metric(model_inputs + metric_inputs, outputs)
 
         avg_validation_loss = total_loss / len(validation_dataloader)
         validation_losses.append(avg_validation_loss)
@@ -128,7 +141,7 @@ def get_schedule(epochs, optimizer, train_dataloader):
         num_training_steps=total_steps
     )
 
-
+@deprecated.deprecated("TODO: Migrate to W&B")
 def save_models(**kwargs):
     """
     Save the models
@@ -142,7 +155,7 @@ def save_models(**kwargs):
         path = get_filename_path(f"eae/{key}.pt")
         torch.save(value.state_dict(), path)
 
-
+@deprecated.deprecated("TODO: Migrate to W&B")
 def load_model(model: type, saved_model_name: str, *args, **kwargs):
     """
     Load a given model.

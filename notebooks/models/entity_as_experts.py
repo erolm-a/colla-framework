@@ -2,7 +2,7 @@
 An implementation of Entity As Expert.
 """
 
-from typing import Optional
+from typing import Optional, Tuple
 from copy import deepcopy
 
 import torch
@@ -326,7 +326,7 @@ class EaEForQuestionAnswering(Module):
         """
         super().__init__()
         self.eae = eae
-        self.qa_outputs = Linear(eae.config.hidden_size, 2)
+        self.qa_outputs = Linear(eae.config.hidden_size, 1024)
 
     def forward(
         self,
@@ -334,14 +334,19 @@ class EaEForQuestionAnswering(Module):
         attention_mask: torch.FloatTensor,
         token_type_ids: torch.LongTensor,
         start_positions: Optional[torch.LongTensor],
-        end_positions: Optional[torch.LongTensor]
-    ):
+        end_positions: Optional[torch.LongTensor],
+        *args, **kwargs
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """
         :param input_ids the input ids
         :param attention_mask
         :param token_type_ids to distinguish between context and question
         :param start_positions the target start positions
-        :parma end_positions the target end positions
+        :param end_positions the target end positions
+
+        Everything else will be ignored.
+
+        :returns a triple loss, start_logits, end_logits
         """
 
         # Copycat from BertForQuestionAnswering.forward()
