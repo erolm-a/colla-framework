@@ -482,6 +482,7 @@ class SQuADDataloader():
 
             for sentence in encoded_full_sentences:
                 sentence.pad(block_size)
+                sentence.truncate(block_size)
 
             answers = examples['answers']
             # TODO: tag unanswerable questions with -1

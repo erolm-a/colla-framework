@@ -1,5 +1,5 @@
 """
-An implementation of Entity As Expert.
+An implementation of Entities As Experts.
 """
 
 from typing import Optional, Tuple
@@ -219,9 +219,9 @@ class TokenPred(Module):
         return self.cls(*args, **kwargs)
 
 
-class EntityAsExperts(Module):
+class EntitiesAsExperts(Module):
     """
-    This is the Entity As Experts implementation. Similarly to Transformers' Bert,
+    This is the Entities As Experts implementation. Similarly to Transformers' Bert,
     task-specific heads should be built on top of this class.
     """
 
@@ -320,7 +320,7 @@ class EaEForQuestionAnswering(Module):
     """
 
     def __init__(self,
-                 eae: EntityAsExperts):
+                 eae: EntitiesAsExperts):
         """
         :param pretrained_model the pretrained model.
         """

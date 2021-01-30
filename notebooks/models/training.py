@@ -13,16 +13,67 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from transformers import AdamW, get_linear_schedule_with_warmup
 
+from torch.cuda.amp import GradScaler, autocast
+import wandb
+
 from tqdm import tqdm
 
 from tools.dumps import get_filename_path
 
 from .device import DEVICE
 
+def login():
+    wandb.login() # this causes stdin read for the first time only
+    wandb.init(project="EntitiesAsExperts")
 
 MAX_GRAD_NORM = 1.0
 
+class MetricWrapper:
+    """
+    A mere wrapper for a HuggingFace's Datasets Metric.
+
+    The calling order is:
+
+    for batch in validation:
+        1. reset()
+        2. add_batch()
+        3. compute()
+    """
+
+    def add_batch(inputs, outputs):
+        """Add a batch"""
+        raise NotImplementedError("")
+    
+    def compute(self, loss: float):
+        """
+        Compute the metric after the batches have been added.
+        This call may call wandb to perform logging.
+        """
+        raise NotImplementedError("")
+
+    def reset(self):
+        """
+        Reset the internal metric counter.
+        """
+        raise NotImplementedError("")
+
+
+def train_log(
+    loss: float,
+    example_ct: int,
+    epoch: int,
+    verbose=False
+):
+    loss = float(loss)
+
+    wandb.log({"train_loss": loss, "epoch": epoch}, step=example_ct)
+    if verbose:
+        print(f"Loss after " + str(example_ct).zfill(5) +
+              f" examples: {loss:.3f}")
+
 # pylint: disable(too-many-arguments)
+
+
 def train_model(
         model: Module,
         train_dataloader: DataLoader,
@@ -31,7 +82,9 @@ def train_model(
         optimizer: Optimizer,
         scheduler: LambdaLR,
         epochs: int,
-        metric: Optional[Callable[[Tuple[List[torch.tensor]]], Any]]):
+        metric: Optional[MetricWrapper] = None,
+        gradient_accumulation_factor: int = 4,
+        automatic_mixed_precision: bool = False):
     """
     Train a model.
 
@@ -48,55 +101,81 @@ def train_model(
     :param metric if provided, a callable that invokes a metric (typically a Dataset.Metric).
            It will be called with params (model_params + metric_params, outputs) where outputs
            are the outputs of the model.
+    :param gradient_accumulation_factor if provided, accumulate the gradient for the given number
+           of steps. This can be useful in order to avoid OOM issues with CUDA.
     """
 
     train_losses = []
-    validation_losses = []
+
+    scaler = GradScaler()
 
     for epoch in range(epochs):
         model.train()
 
         total_loss = 0
+        example_ct = 0
 
-        for batch in tqdm(train_dataloader):
+        pending_updates = False
+
+        for batch_idx, batch in enumerate(tqdm(train_dataloader)):
             model_input, _ = load_from_dataloader(batch)
             inputs = [elem.to(DEVICE) for elem in model_input]
 
-            model.zero_grad()
-            loss, *_ = model(*inputs)
-            loss.backward()
-            total_loss += loss.item()
+            with autocast():
+                loss, *_ = model(*inputs)
+                scaler.scale(loss).backward()
+                pending_updates = True
+                total_loss += loss.item()
 
-            clip_grad_norm_(parameters=model.parameters(),
-                            max_norm=MAX_GRAD_NORM)
+                clip_grad_norm_(parameters=model.parameters(),
+                                max_norm=MAX_GRAD_NORM)
 
-            optimizer.step()
+                if (batch_idx + 1) % gradient_accumulation_factor == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    scheduler.step()
+                    model.zero_grad()
+                    pending_updates = False
+
+                example_ct += len(model_input)
+
+                if (batch_idx + 1) % 25 == 0:
+                    train_log(loss, example_ct, epoch)
+                
+                
+        if pending_updates:
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
+            model.zero_grad()
+            pending_updates = False
 
         avg_train_loss = total_loss / len(train_dataloader)
         tqdm.write(f"Average train loss at epoch {epoch}: {avg_train_loss}")
-
+        
         train_losses.append(avg_train_loss)
-
         model.eval()
-
         total_loss = 0
+        metric.reset()
 
-        for batch in tqdm(validation_dataloader):
-            model_inputs, metric_inputs = load_from_dataloader(batch)
-            inputs = [elem.to(DEVICE) for elem in model_inputs]
+        # make sure the model has zero gradient before evaluating
+        model.zero_grad()
 
-            with torch.no_grad():
+        with torch.no_grad():
+            for batch in tqdm(validation_dataloader):
+                model_inputs, metric_inputs = load_from_dataloader(batch)
+                inputs = [elem.to(DEVICE) for elem in model_inputs]
+
                 loss, *outputs = model(*inputs)
                 total_loss += loss.item()
 
                 if metric:
-                    metric(model_inputs + metric_inputs, outputs)
+                    metric.add_batch(model_inputs + metric_inputs, outputs, loss)
 
         avg_validation_loss = total_loss / len(validation_dataloader)
-        validation_losses.append(avg_validation_loss)
         tqdm.write(
             f"Average eval loss at epoch {epoch}: {avg_validation_loss}")
+        metric.compute(epoch)
 
     return avg_train_loss, avg_validation_loss
 
