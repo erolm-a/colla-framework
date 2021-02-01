@@ -40,7 +40,7 @@ class MetricWrapper:
         3. compute()
     """
 
-    def add_batch(inputs, outputs):
+    def add_batch(self, inputs, outputs):
         """Add a batch"""
         raise NotImplementedError("")
     
@@ -107,7 +107,7 @@ def train_model(
 
     train_losses = []
 
-    scaler = GradScaler()
+    #scaler = GradScaler()
 
     for epoch in range(epochs):
         model.train()
@@ -121,31 +121,34 @@ def train_model(
             model_input, _ = load_from_dataloader(batch)
             inputs = [elem.to(DEVICE) for elem in model_input]
 
-            with autocast():
-                loss, *_ = model(*inputs)
-                scaler.scale(loss).backward()
-                pending_updates = True
-                total_loss += loss.item()
+            #with autocast():
+            loss, *_ = model(*inputs)
+            #scaler.scale(loss).backward()
+            loss.backward()
+            pending_updates = True
+            total_loss += loss.item()
 
-                clip_grad_norm_(parameters=model.parameters(),
-                                max_norm=MAX_GRAD_NORM)
+            clip_grad_norm_(parameters=model.parameters(),
+                            max_norm=MAX_GRAD_NORM)
 
-                if (batch_idx + 1) % gradient_accumulation_factor == 0:
-                    scaler.step(optimizer)
-                    scaler.update()
-                    scheduler.step()
-                    model.zero_grad()
-                    pending_updates = False
+            if (batch_idx + 1) % gradient_accumulation_factor == 0:
+                #scaler.step(optimizer)
+                optimizer.step()
+                #scaler.update()
+                scheduler.step()
+                model.zero_grad()
+                pending_updates = False
 
-                example_ct += len(model_input)
+            example_ct += len(model_input)
 
-                if (batch_idx + 1) % 25 == 0:
-                    train_log(loss, example_ct, epoch)
+            if (batch_idx + 1) % 25 == 0:
+                train_log(loss, example_ct, epoch)
                 
                 
         if pending_updates:
-            scaler.step(optimizer)
-            scaler.update()
+            #scaler.step(optimizer)
+            optimizer.step()
+            #scaler.update()
             scheduler.step()
             model.zero_grad()
             pending_updates = False
@@ -156,7 +159,9 @@ def train_model(
         train_losses.append(avg_train_loss)
         model.eval()
         total_loss = 0
-        metric.reset()
+
+        if metric:
+            metric.reset()
 
         # make sure the model has zero gradient before evaluating
         model.zero_grad()
