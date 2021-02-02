@@ -16,10 +16,10 @@ from transformers import AdamW, get_linear_schedule_with_warmup
 import wandb
 
 from tqdm import tqdm
-
 from tools.dumps import get_filename_path
+from .device import get_available_device
 
-from .device import DEVICE
+DEVICE = get_available_device()
 
 def login():
     wandb.login() # this causes stdin read for the first time only
@@ -84,8 +84,6 @@ def train_log(
               f" examples: {loss:.3f}")
 
 # pylint: disable(too-many-arguments)
-
-
 def train_model(
         model: Module,
         train_dataloader: DataLoader,
@@ -117,6 +115,8 @@ def train_model(
            of steps. This can be useful in order to avoid OOM issues with CUDA.
     """
 
+
+    tqdm.write(f"Training on {DEVICE}")
 
     if metric is None:
         metric = MetricWrapper(validation_dataloader)

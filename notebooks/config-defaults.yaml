@@ -1,0 +1,35 @@
+# EaE Section
+eae_pretraining_epochs:
+  desc: Number of epochs while pretraining
+  value: 5
+eae_batch_size:
+  desc: Batch size while pretraining
+  value: 8
+eae_full_finetuning:
+  desc: Perform full finetuning (slower training)
+  value: false
+eae_l0:
+  desc: Depth of first transformer block
+  value: 4
+eae_l1:
+  desc: Depth of second transformer block
+  value: 8
+eae_embedding_size:
+  desc: Entity embedding size
+  value: 256
+
+squad_epochs:
+  desc: Number of epochs while finetuning for SQuAD
+  value: 5
+squad_batch_size:
+  desc: Batch size while finetuning for SQuAD
+  value: 8
+triviaqa_epochs:
+  desc: Number of epochs while finetuning for TriviaQA
+  value: 5
+triviaqa_batch_size:
+  desc: Batch size while finetuning for TriviaQA
+  value: 8
+device:
+  desc: Device to train on. If gpu is chosen the model will try to pick one gpu, or resort to CPU training if no gpu is available
+  value: cpu

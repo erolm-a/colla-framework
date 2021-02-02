@@ -8,11 +8,10 @@ from copy import deepcopy
 import torch
 from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm
 import torch.nn.functional as F
-
 from transformers import BertForMaskedLM
+from .device import get_available_device
 
-from .device import DEVICE
-
+DEVICE = get_available_device()
 
 class TruncatedEncoder(Module):
     """
@@ -193,6 +192,8 @@ class EntityMemory(Module):
                 topk = torch.topk(self.E.weight.T.matmul(
                     pseudo_entity_embedding), k)
                 alpha = F.softmax(topk.values, dim=0)
+            
+                print(alpha.size())
             picked_entity = self.E.weight.matmul(alpha)
 
             y[pos[0], pos[1]] = self.W_b(picked_entity)

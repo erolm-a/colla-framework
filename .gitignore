@@ -433,3 +433,8 @@ notebooks/data/
 notebooks/3rdparty/lucene-index
 notebooks/resources
 notebooks/config
+
+# ... metals
+.metals/
+# ... wandb
+wandb/

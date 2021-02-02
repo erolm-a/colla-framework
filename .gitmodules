@@ -8,3 +8,6 @@
 [submodule "notebooks/3rdparty/trec-car-tools"]
 	path = notebooks/3rdparty/trec-car-tools
 	url = https://github.com/TREMA-UNH/trec-car-tools
+[submodule "notebooks/3rdparty/triviaqa"]
+	path = notebooks/3rdparty/triviaqa
+	url = https://github.com/mandarjoshi90/triviaqa
