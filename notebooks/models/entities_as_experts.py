@@ -92,6 +92,8 @@ class BioClassifier(Module):
             if attention_mask is not None:
                 active_loss = attention_mask.view(-1) == 1
                 active_logits = logits.view(-1, self.num_labels)
+
+                # pylint: disable=no-member
                 active_labels = torch.where(
                     # pylint: disable=not-callable
                     active_loss, labels.view(-1), torch.tensor(
@@ -178,9 +180,11 @@ class EntityMemory(Module):
             mention_span = torch.cat([first, second], 0).to(DEVICE)
             pseudo_entity_embedding = self.W_f(mention_span)  # d_ent
 
+            # During training consider the whole entity dictionary
+            # 
             # Not sure why Pylint thinks self.train is a constant
             # pylint: disable=using-constant-test
-            if self.train:
+            if self.train and bio_output is not None and entities_output is not None:
                 alpha = F.softmax(self.E.weight.T.matmul(
                     pseudo_entity_embedding), dim=0)
 

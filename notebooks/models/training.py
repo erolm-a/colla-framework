@@ -13,7 +13,6 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from transformers import AdamW, get_linear_schedule_with_warmup
 
-from torch.cuda.amp import GradScaler, autocast
 import wandb
 
 from tqdm import tqdm
@@ -38,24 +37,37 @@ class MetricWrapper:
         1. reset()
         2. add_batch()
         3. compute()
+    
+    This class provides a default implementation of a MetricWrapper which
+    sends evaluation loss to W&B.
     """
 
-    def add_batch(self, inputs, outputs):
-        """Add a batch"""
-        raise NotImplementedError("")
+    def __init__(self, dataloader: DataLoader):
+        self.reset()
+        self.dataloader_length = len(dataloader)
+
+    def add_batch(self, _inputs, _outputs, loss: float):
+        """Add a batch
+
+        :param _inputs
+        :param _outputs
+        :param loss the loss of the model
+        """
+        self.loss += float(loss)
     
-    def compute(self, loss: float):
+    def compute(self, epoch: int) -> float:
         """
         Compute the metric after the batches have been added.
         This call may call wandb to perform logging.
         """
-        raise NotImplementedError("")
+        avg_loss = self.loss / self.dataloader_length
+        wandb.log({'val_loss': avg_loss, "epoch": epoch})
 
     def reset(self):
         """
         Reset the internal metric counter.
         """
-        raise NotImplementedError("")
+        self.loss = 0.0
 
 
 def train_log(
@@ -100,19 +112,18 @@ def train_model(
     :param epochs
     :param metric if provided, a callable that invokes a metric (typically a Dataset.Metric).
            It will be called with params (model_params + metric_params, outputs) where outputs
-           are the outputs of the model.
+           are the outputs of the model. If a metric is not provided a default one will be provided.
     :param gradient_accumulation_factor if provided, accumulate the gradient for the given number
            of steps. This can be useful in order to avoid OOM issues with CUDA.
     """
 
-    train_losses = []
 
-    #scaler = GradScaler()
+    if metric is None:
+        metric = MetricWrapper(validation_dataloader)
 
     for epoch in range(epochs):
         model.train()
 
-        total_loss = 0
         example_ct = 0
 
         pending_updates = False
@@ -121,20 +132,15 @@ def train_model(
             model_input, _ = load_from_dataloader(batch)
             inputs = [elem.to(DEVICE) for elem in model_input]
 
-            #with autocast():
             loss, *_ = model(*inputs)
-            #scaler.scale(loss).backward()
             loss.backward()
             pending_updates = True
-            total_loss += loss.item()
 
             clip_grad_norm_(parameters=model.parameters(),
                             max_norm=MAX_GRAD_NORM)
 
             if (batch_idx + 1) % gradient_accumulation_factor == 0:
-                #scaler.step(optimizer)
                 optimizer.step()
-                #scaler.update()
                 scheduler.step()
                 model.zero_grad()
                 pending_updates = False
@@ -146,24 +152,14 @@ def train_model(
                 
                 
         if pending_updates:
-            #scaler.step(optimizer)
             optimizer.step()
-            #scaler.update()
             scheduler.step()
             model.zero_grad()
             pending_updates = False
 
-        avg_train_loss = total_loss / len(train_dataloader)
-        tqdm.write(f"Average train loss at epoch {epoch}: {avg_train_loss}")
-        
-        train_losses.append(avg_train_loss)
         model.eval()
-        total_loss = 0
 
-        if metric:
-            metric.reset()
-
-        # make sure the model has zero gradient before evaluating
+        metric.reset()
         model.zero_grad()
 
         with torch.no_grad():
@@ -172,17 +168,11 @@ def train_model(
                 inputs = [elem.to(DEVICE) for elem in model_inputs]
 
                 loss, *outputs = model(*inputs)
-                total_loss += loss.item()
 
-                if metric:
-                    metric.add_batch(model_inputs + metric_inputs, outputs, loss)
+                metric.add_batch(model_inputs + metric_inputs, outputs, loss)
 
-        avg_validation_loss = total_loss / len(validation_dataloader)
-        tqdm.write(
-            f"Average eval loss at epoch {epoch}: {avg_validation_loss}")
         metric.compute(epoch)
 
-    return avg_train_loss, avg_validation_loss
 
 
 def get_optimizer(model: Module, full_finetuning=False):
