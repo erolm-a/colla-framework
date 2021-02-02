@@ -2,4 +2,4 @@
 Export a list of models we need
 """
 
-from .entity_as_experts import EntityAsExperts, EaEForQuestionAnswering
+from .entities_as_experts import EntitiesAsExperts, EaEForQuestionAnswering

@@ -24,7 +24,6 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::cmp::*;
-
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -102,13 +101,9 @@ macro_rules! cast_errors {
 }
 
 
-#[pyclass(unsendable)]
+#[pyclass]
 struct TokenizerCereal {
-    // Pytorch's threading may cause issues with the internal seek positioning of a file,
-    // thus, put a simple mutex on this
-    // slice_file : Arc<Mutex<std::fs::File>>,
-
-    slice_files: Arc<blockingqueue::BlockingQueue<std::fs::File>>,
+    slice_file : std::fs::File,
 
     #[pyo3(get)]
     slice_offsets: Vec<usize>,
@@ -117,7 +112,6 @@ struct TokenizerCereal {
     article_lengths: Vec<u32>
 }
 
-const FP_POOL_SIZE: usize = 4;
 
 #[pymethods]
 impl TokenizerCereal {
@@ -142,51 +136,43 @@ impl TokenizerCereal {
 
         let slice_offsets = bincode::deserialize_from(toc_file).unwrap();
         
-        let slice_files = Arc::new(blockingqueue::BlockingQueue::new());
-
-        for _ in 1..FP_POOL_SIZE {
-            slice_files.push(File::open(slice_path).unwrap());
-        }
+        let slice_file = File::open(slice_path).unwrap();
 
         TokenizerCereal {
-            //slice_file: Arc::new(Mutex::new(slice_file)),
-            slice_files: slice_files,
+            slice_file: slice_file,
             slice_offsets: slice_offsets,
             article_lengths: article_lenghts
         }
     }
 
     /// Get a chosen slice batch from a tokenized slice file.
+    /// This is the go-to method for implementing a map-based dataloader.
     /// :param idx the index of the article to use according to the previously generated
     ///        TOC (whose path is cereal_path + \".toc\").
     /// :param block_idx the block idx. The resulting block may have a smaller
     ///        size than the prescribed block size (true for last blocks).
     /// :param content_block_size the size of the blocks
     /// :returns a pair of vectors: text tokens and link link target output.
-    fn get_slice(&self, idx: usize, block_idx: usize, content_block_size: usize)
+    fn get_slice(&mut self, idx: usize, block_idx: usize, content_block_size: usize)
                  -> PyResult<(Vec<u32>, Vec<u32>)> {
-        let file_refs = Arc::clone(&self.slice_files);
-        let mut file = file_refs.pop();
-        // let file = &mut file_ref.lock().unwrap();
-        file.seek(SeekFrom::Start(0))?;
-        let output = get_token_slice(&mut file, &self.slice_offsets, idx, block_idx, content_block_size);
-        file_refs.push(file);
+        get_token_slice(&mut self.slice_file, &self.slice_offsets, idx, block_idx, content_block_size)
+    }
 
-        output
+    /// Get the next slice batch from a tokenized slice file.
+    /// :returns a pair of vectors: text tokens and link link target output.
+    fn get_next_slice(&mut self)
+                -> PyResult<(Vec<u32>, Vec<u32>)> {
+        get_next_token_slice(&self.slice_file)
     }
 
     /// Count the frequency of a tokenized slice file.
     ///
     /// :returns a frequency count dictionary. The keys are link ids and the values are the
     ///          frequency count.
-    fn get_frequency_count(&self) -> PyResult<HashMap<u32, u32>> {
-        let file_refs = Arc::clone(&self. slice_files);
-        let mut file = file_refs.pop();
-        // let file = &mut file_ref.lock().unwrap();
+    fn get_frequency_count(&mut self) -> PyResult<HashMap<u32, u32>> {
+        let file = &mut self.slice_file;
         file.seek(SeekFrom::Start(0))?;
-        let output = count_frequency(&mut file, &self.slice_offsets);
-        file_refs.push(file);
-
+        let output = count_frequency(file, &self.slice_offsets);
         output
     }
 }
@@ -207,13 +193,13 @@ mod tests {
 
     const PATH: &str = "/wikipedia/car-wiki2020-01-01/partitions/test_rust.cereal";
 
-    fn get_tokenizer() -> Arc<TokenizerCereal> {
+    fn get_tokenizer() -> Arc<Mutex<TokenizerCereal>> {
         let cereal_path = match std::env::var("DATA_DIR") {
             Ok(val) => val + PATH,
             Err(_) => "data".to_owned() + PATH
         };
 
-        Arc::new(get_default_tokenizer_helper(&cereal_path).unwrap())
+        Arc::new(Mutex::new(get_default_tokenizer_helper(&cereal_path).unwrap()))
     }
 
     #[test]
@@ -223,7 +209,7 @@ mod tests {
         let tokenizer = get_tokenizer();
 
         for (a, b) in reqs {
-            tokenizer.get_slice(a, 128, b).unwrap();
+            tokenizer.lock().unwrap().get_slice(a, 128, b).unwrap();
         }
     }
 
@@ -259,7 +245,7 @@ mod tests {
             Err(_) => "data".to_owned() + PATH
         };
 
-        let tokenizer = Arc::new(get_default_tokenizer_helper(&cereal_path).unwrap());
+        let tokenizer = get_tokenizer();
 
         let (s, r) = crossbeam::channel::unbounded();
 
@@ -276,7 +262,7 @@ mod tests {
 
                 scope.spawn(move |_| {
                     for (a, b) in ranges.iter() {
-                        results.push(shared_tokenizer.get_slice(*a, 128, *b).unwrap());
+                        results.push(shared_tokenizer.lock().unwrap().get_slice(*a, 128, *b).unwrap());
                     }
 
                     s2.send(results).unwrap();
@@ -304,6 +290,8 @@ cast_errors!(get_token_slice(input_file: &mut File, // required mutability for s
     idx: usize,
     block_idx: usize,
     context_block_size: usize) -> (Vec<u32>, Vec<u32>));
+
+cast_errors!(get_next_token_slice(input_file: &File) -> (Vec<u32>, Vec<u32>));
 
 cast_errors!(count_frequency(
     slice: &mut File,
@@ -406,13 +394,10 @@ fn get_default_tokenizer_helper(slice_path: &str) -> anyhow::Result<TokenizerCer
     }
 
 
-    let slice_files = Arc::new(blockingqueue::BlockingQueue::new());
-    for _ in 1..FP_POOL_SIZE {
-        slice_files.push(File::open(slice_path).unwrap());
-    }
+    let slice_file = File::open(slice_path).unwrap();
 
     Ok(TokenizerCereal {
-        slice_files: slice_files,
+        slice_file: slice_file,
         slice_offsets: slice_offsets,
         article_lengths: article_lenghts
     })
@@ -485,6 +470,14 @@ fn get_token_slice_helper(
 
     Ok((page_format.tokens[start_idx..end_idx].to_vec(),
         page_format.link_embedding[start_idx..end_idx].to_vec()))
+}
+
+fn get_next_token_slice_helper(
+    input_file: &File,
+) -> anyhow::Result<(Vec<u32>, Vec<u32>)> {
+    let page_format : PageFormatOutput = bincode::deserialize_from(input_file)  ?;
+
+    Ok((page_format.tokens, page_format.link_embedding))
 }
 
 /// Return a link output list

@@ -1,8 +1,8 @@
 """
-An implementation of Entity As Expert.
+An implementation of Entities As Experts.
 """
 
-from typing import Optional
+from typing import Optional, Tuple
 from copy import deepcopy
 
 import torch
@@ -92,6 +92,8 @@ class BioClassifier(Module):
             if attention_mask is not None:
                 active_loss = attention_mask.view(-1) == 1
                 active_logits = logits.view(-1, self.num_labels)
+
+                # pylint: disable=no-member
                 active_labels = torch.where(
                     # pylint: disable=not-callable
                     active_loss, labels.view(-1), torch.tensor(
@@ -178,9 +180,11 @@ class EntityMemory(Module):
             mention_span = torch.cat([first, second], 0).to(DEVICE)
             pseudo_entity_embedding = self.W_f(mention_span)  # d_ent
 
+            # During training consider the whole entity dictionary
+            # 
             # Not sure why Pylint thinks self.train is a constant
             # pylint: disable=using-constant-test
-            if self.train:
+            if self.train and bio_output is not None and entities_output is not None:
                 alpha = F.softmax(self.E.weight.T.matmul(
                     pseudo_entity_embedding), dim=0)
 
@@ -219,9 +223,9 @@ class TokenPred(Module):
         return self.cls(*args, **kwargs)
 
 
-class EntityAsExperts(Module):
+class EntitiesAsExperts(Module):
     """
-    This is the Entity As Experts implementation. Similarly to Transformers' Bert,
+    This is the Entities As Experts implementation. Similarly to Transformers' Bert,
     task-specific heads should be built on top of this class.
     """
 
@@ -320,13 +324,13 @@ class EaEForQuestionAnswering(Module):
     """
 
     def __init__(self,
-                 eae: EntityAsExperts):
+                 eae: EntitiesAsExperts):
         """
         :param pretrained_model the pretrained model.
         """
         super().__init__()
         self.eae = eae
-        self.qa_outputs = Linear(eae.config.hidden_size, 2)
+        self.qa_outputs = Linear(eae.config.hidden_size, 1024)
 
     def forward(
         self,
@@ -334,14 +338,19 @@ class EaEForQuestionAnswering(Module):
         attention_mask: torch.FloatTensor,
         token_type_ids: torch.LongTensor,
         start_positions: Optional[torch.LongTensor],
-        end_positions: Optional[torch.LongTensor]
-    ):
+        end_positions: Optional[torch.LongTensor],
+        *args, **kwargs
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """
         :param input_ids the input ids
         :param attention_mask
         :param token_type_ids to distinguish between context and question
         :param start_positions the target start positions
-        :parma end_positions the target end positions
+        :param end_positions the target end positions
+
+        Everything else will be ignored.
+
+        :returns a triple loss, start_logits, end_logits
         """
 
         # Copycat from BertForQuestionAnswering.forward()
