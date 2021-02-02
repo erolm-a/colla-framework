@@ -5,6 +5,9 @@ eae_pretraining_epochs:
 eae_batch_size:
   desc: Batch size while pretraining
   value: 8
+eae_gradient_accum_size:
+  desc: "Gradient accumulator multiplier"
+  value: 8
 eae_full_finetuning:
   desc: Perform full finetuning (slower training)
   value: false
@@ -14,7 +17,7 @@ eae_l0:
 eae_l1:
   desc: Depth of second transformer block
   value: 8
-eae_embedding_size:
+eae_entity_embedding_size:
   desc: Entity embedding size
   value: 256
 
@@ -32,4 +35,4 @@ triviaqa_batch_size:
   value: 8
 device:
   desc: Device to train on. If gpu is chosen the model will try to pick one gpu, or resort to CPU training if no gpu is available
-  value: cpu
+  value: gpu

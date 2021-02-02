@@ -21,10 +21,6 @@ from .device import get_available_device
 
 DEVICE = get_available_device()
 
-def login():
-    wandb.login() # this causes stdin read for the first time only
-    wandb.init(project="EntitiesAsExperts")
-
 MAX_GRAD_NORM = 1.0
 
 class MetricWrapper:
@@ -115,8 +111,6 @@ def train_model(
            of steps. This can be useful in order to avoid OOM issues with CUDA.
     """
 
-
-    tqdm.write(f"Training on {DEVICE}")
 
     if metric is None:
         metric = MetricWrapper(validation_dataloader)

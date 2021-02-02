@@ -186,25 +186,25 @@ class EntityMemory(Module):
             if self.train and bio_output is not None and entities_output is not None:
                 alpha = F.softmax(self.E.weight.T.matmul(
                     pseudo_entity_embedding), dim=0)
+                picked_entity = self.E.weight.matmul(alpha) + self.E.bias
 
             else:
                 # K nearest neighbours
+                # 
                 topk = torch.topk(self.E.weight.T.matmul(
                     pseudo_entity_embedding), k)
+
                 alpha = F.softmax(topk.values, dim=0)
+
+                picked_entity = self.E.weight[:, topk.indices].matmul(alpha) + self.E.bias
             
-                print(alpha.size())
-            picked_entity = self.E.weight.matmul(alpha)
 
             y[pos[0], pos[1]] = self.W_b(picked_entity)
 
             if calculate_loss:
                 loss += alpha[entities_output[pos[0], pos[1]]]
 
-        if calculate_loss:
-            return loss, y
-
-        return y
+        return loss, y
 
 
 class TokenPred(Module):
@@ -294,10 +294,8 @@ class EntitiesAsExperts(Module):
         bio_choices = torch.argmax(bio_outputs[1], 2)
         entity_memory_outputs = self.entity_memory(
             X, bio_choices, entity_outputs)
-        if compute_loss:
-            entity_loss, entity_outputs = entity_memory_outputs
-        else:
-            entity_outputs = entity_memory_outputs
+
+        entity_loss, entity_outputs = entity_memory_outputs
 
         X = self.second_block(self.layernorm(entity_outputs + X),
                               encoder_attention_mask=attention_mask)
