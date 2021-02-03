@@ -233,6 +233,6 @@ def load_model(model: type, saved_model_name: str, *args, **kwargs):
     """
     model = model(*args, **kwargs)
     model.load_state_dict(torch.load(
-        get_filename_path(f"eae/{saved_model_name}.pt")))
+        get_filename_path(f"eae/{saved_model_name}.pt"), map_location=torch.device('cpu')))
 
     return model

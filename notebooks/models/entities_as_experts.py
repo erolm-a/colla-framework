@@ -329,7 +329,7 @@ class EaEForQuestionAnswering(Module):
         """
         super().__init__()
         self.eae = eae
-        self.qa_outputs = Linear(eae.config.hidden_size, 1024)
+        self.qa_outputs = Linear(eae.config.hidden_size, 2)
 
     def forward(
         self,
