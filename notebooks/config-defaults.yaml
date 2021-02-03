@@ -34,5 +34,5 @@ triviaqa_batch_size:
   desc: Batch size while finetuning for TriviaQA
   value: 8
 device:
-  desc: Device to train on. If gpu is chosen the model will try to pick one gpu, or resort to CPU training if no gpu is available
-  value: gpu
+  desc: Device to train on. If cuda is chosen the model will try to pick one gpu, or resort to CPU training if no gpu is available
+  value: cuda

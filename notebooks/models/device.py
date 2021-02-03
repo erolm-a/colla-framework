@@ -6,6 +6,6 @@ import wandb
 
 def get_available_device():
     device = wandb.config.device
-    if device == "gpu":
-        return torch.device("gpu" if torch.cuda.is_available() else "cpu")
+    if device == "cuda":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return device
