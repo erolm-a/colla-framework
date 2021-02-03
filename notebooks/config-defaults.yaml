@@ -5,8 +5,11 @@ eae_pretraining_epochs:
 eae_batch_size:
   desc: Batch size while pretraining
   value: 8
+eae_wikipedia_cutoff_frequency:
+  desc: Cutoff frequency for the most common entities. 0.05 = 5% of the mentions on Wikipedia (taking the most common ones)
+  value: 0.03
 eae_gradient_accum_size:
-  desc: "Gradient accumulator multiplier"
+  desc: Gradient accumulator multiplier
   value: 8
 eae_full_finetuning:
   desc: Perform full finetuning (slower training)
@@ -24,6 +27,9 @@ eae_entity_embedding_size:
 squad_epochs:
   desc: Number of epochs while finetuning for SQuAD
   value: 5
+squad_is_dev:
+  desc: "Train only on a small development set"
+  value: True
 squad_batch_size:
   desc: Batch size while finetuning for SQuAD
   value: 8
