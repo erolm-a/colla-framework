@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 from copy import deepcopy
 
 import torch
-from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm
+from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLoss
 import torch.nn.functional as F
 from transformers import BertForMaskedLM
 from .device import get_available_device
@@ -137,6 +137,16 @@ class EntityMemory(Module):
         self.inner = 2
         self.out = 0
 
+        self.loss = NLLLoss()
+    
+    def _get_last_mention(self, bio_output, pos):
+        end_mention = pos[1]
+        while end_mention < self.d_emb and bio_output[pos[0], end_mention] == self.inner:
+            end_mention += 1
+        end_mention -= 1
+
+        return end_mention
+
     def forward(
         self,
         X,
@@ -146,7 +156,8 @@ class EntityMemory(Module):
     ) -> (torch.tensor, torch.tensor):
         """
         :param x the (raw) output of the first transformer block. It has a shape:
-                B x N x (embed_size). If not provided no loss is returned
+                B x N x (embed_size).
+        :param bio_output the output of the bio classifier. If not provided no loss is returned
                 (which is required during a training stage).
         :param entities_output the detected entities. If not provided no loss is returned
                 (which is required during a training stage).
@@ -156,54 +167,77 @@ class EntityMemory(Module):
                   None loss will be None as well.
         """
 
-        calculate_loss = bio_output is not None and entities_output is not None
-
-        begin_positions = torch.nonzero(bio_output == self.begin)
 
         y = torch.zeros_like(X).to(DEVICE)
 
+        # Disable gradient calculation for BIO outputs, but re-enable them
+        # for the span
+        with torch.no_grad():
+
+            calculate_loss = bio_output is not None and entities_output is not None
+            if calculate_loss:
+                loss = torch.zeros((1,)).to(DEVICE)
+            else:
+                loss = None
+
+
+
+            begin_positions = torch.nonzero(bio_output == self.begin)
+
+            # if no mentions are detected skip the entity memory.
+            # TODO: would be nice to assess how often this happens.
+            if len(begin_positions) == 0:
+                return loss, y
+
+            # FIXME: Not really parallelized (we don't have vmap yet...)
+            end_positions = torch.tensor([
+                self._get_last_mention(bio_output, pos) for pos in begin_positions]).unsqueeze(1).to(DEVICE)
+
+            print(end_positions)
+
+        # Create an array of:
+        # 3 dimensions:
+        # [ batch_idx1, batch_idx2, batch_idx3... ]
+        # [ start_idx1, start_idx2, start_idx3... ]
+        # [ end_idx1, end_idx2, end_idx3 ]
+
+        positions = torch.cat([begin_positions, end_positions], 1).T
+        print("BIO positions: ", positions.size()) # expected: (3 x something)
+
+        first = X[positions[0], positions[1]]
+        second = X[positions[0], positions[2]]
+
+        print("First size: ", first.size()) # expected: (something x 768)
+        print("Second size: ", second.size()) # expected: (something x 768)
+
+        mention_span = torch.cat([first, second], 1).to(DEVICE)
+        pseudo_entity_embedding = self.W_f(mention_span) # num_of_mentions x d_ent
+
+        # During training consider the whole entity dictionary
+        # Not sure why Pylint thinks self.train is a constant
+        # pylint: disable=using-constant-test
+        if self.train and bio_output is not None and entities_output is not None:
+            alpha = F.softmax(self.E.weight.T.matmul(
+                pseudo_entity_embedding), dim=1)
+            picked_entity = self.E.weight.matmul(alpha) + self.E.bias
+        
+        else:
+            # K nearest neighbours
+            topk = torch.topk(self.E.weight.T.matmul(
+                pseudo_entity_embedding), k)
+
+            alpha = F.softmax(topk.values, dim=1)
+
+            picked_entity = self.E.weight[:, topk.indices].matmul(alpha) + self.E.bias
+
+        y[positions[0], positions[1]] = self.W_b(picked_entity)
+
+        # Compared to the original paper we use NLLoss.
+        # Gradient-wise this should not change anything
         if calculate_loss:
-            loss = torch.zeros((1,)).to(DEVICE)
+            loss = loss(alpha, entities_output[positions[0], positions[1]])
         else:
             loss = None
-
-        for pos in begin_positions:
-            end_mention = pos[1]
-            while end_mention < self.d_emb and bio_output[pos[0], end_mention] == self.inner:
-                end_mention += 1
-            end_mention -= 1
-
-            first = X[pos[0], pos[1]]
-            second = X[pos[0], end_mention]
-
-            mention_span = torch.cat([first, second], 0).to(DEVICE)
-            pseudo_entity_embedding = self.W_f(mention_span)  # d_ent
-
-            # During training consider the whole entity dictionary
-            # 
-            # Not sure why Pylint thinks self.train is a constant
-            # pylint: disable=using-constant-test
-            if self.train and bio_output is not None and entities_output is not None:
-                alpha = F.softmax(self.E.weight.T.matmul(
-                    pseudo_entity_embedding), dim=0)
-                picked_entity = self.E.weight.matmul(alpha) + self.E.bias
-
-            else:
-                # K nearest neighbours
-                # 
-                topk = torch.topk(self.E.weight.T.matmul(
-                    pseudo_entity_embedding), k)
-
-                alpha = F.softmax(topk.values, dim=0)
-
-                picked_entity = self.E.weight[:, topk.indices].matmul(alpha) + self.E.bias
-            
-
-            y[pos[0], pos[1]] = self.W_b(picked_entity)
-
-            if calculate_loss:
-                loss += alpha[entities_output[pos[0], pos[1]]]
-
         return loss, y
 
 
@@ -285,15 +319,15 @@ class EntitiesAsExperts(Module):
                                                output_hidden_states=True)
 
         X = first_block_outputs[0]
-        bio_outputs = self.bioclassifier(X, attention_mask=attention_mask,
+        bio_loss, bio_outputs = self.bioclassifier(X, attention_mask=attention_mask,
                                          labels=mention_boundaries)
 
-        if compute_loss:
-            bio_loss = bio_outputs[0]
-
-        bio_choices = torch.argmax(bio_outputs[1], 2)
+        if not compute_loss:
+            bio_choices = torch.argmax(bio_outputs[1], 2)
+            mention_boundaries = bio_choices
+        
         entity_memory_outputs = self.entity_memory(
-            X, bio_choices, entity_outputs)
+            X, mention_boundaries, entity_outputs)
 
         entity_loss, entity_outputs = entity_memory_outputs
 
