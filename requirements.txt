@@ -25,4 +25,4 @@ pyserini==0.9.4.0
 seaborn==0.10.1
 Deprecated==1.2.10
 maturin==0.8.3
-wandb==0.10.15
+wandb==0.10.17

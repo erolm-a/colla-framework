@@ -1,7 +1,10 @@
+import sys
+import argparse
+
 import datasets
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, SubsetRandomSampler
+from torch.utils.data import DataLoader
 from transformers import BertForMaskedLM, BertForTokenClassification
 
 import wandb
@@ -9,10 +12,10 @@ import wandb
 from tools.dataloaders import SQuADDataloader
 
 from models import EaEForQuestionAnswering, EntitiesAsExperts
-from models.training import train_model, get_optimizer, get_schedule, MetricWrapper, load_model
-from tools.dataloaders import WikipediaCBOR
+from models.training import train_model, get_optimizer, get_schedule, MetricWrapper, save_models
 from models import EntitiesAsExperts, EaEForQuestionAnswering
 from models.device import get_available_device
+
 
 def parse_batch(batch):
     input_ids = torch.tensor(batch['input_ids'])
@@ -23,16 +26,6 @@ def parse_batch(batch):
     
     return (input_ids, attention_mask, token_type_ids, start, end), (batch,)
 
-def parse_batch_2(batch):
-    input_ids = torch.tensor(batch['input_ids'])
-    attention_mask = torch.FloatTensor(batch['attention_mask'])
-    token_type_ids = torch.tensor(batch['token_type_ids'])
-    start = torch.tensor(batch['answer_start'])
-    end = torch.tensor(batch['answer_end'])
-    
-    return (input_ids, attention_mask, token_type_ids), (batch,)
-
-
 class SQuADMetric(MetricWrapper):
     def __init__(self, squad_dataset: SQuADDataloader):
         self.squad_dataset = squad_dataset
@@ -42,7 +35,7 @@ class SQuADMetric(MetricWrapper):
         self.squad_metric = datasets.load_metric('squad')
         self.loss = 0.0
     
-    def add_batch(self, inputs, outputs, loss):
+    def add_batch(self, inputs, outputs, loss: torch.tensor):
         self.loss += float(loss)
         
         batch_input = inputs[-1]
@@ -81,9 +74,7 @@ class SQuADMetric(MetricWrapper):
 
 
 
-def main():
-    squad_metric, squad_v2_metric = datasets.load_metric('squad'), datasets.load_metric('squad_v2')
-
+def main(run_id: str):
     np.random.seed(42)
 
     squad_dataset = SQuADDataloader()
@@ -92,50 +83,25 @@ def main():
         keys = rows[0].keys()
         return {key: [row[key] for row in rows] for key in keys}
 
+    # TODO: this causes a Type Error as it returns a None. Why is that?
+    squad_train_dataset = squad_dataset.dev_dataset if wandb.config.squad_is_dev else squad_dataset.train_dataset
     squad_train_dataset = squad_dataset.train_dataset
+    squad_train_dataloader = DataLoader(squad_train_dataset,
+                                        batch_size=wandb.config.squad_batch_size,
+                                        collate_fn=squad_collate_fn,
+                                        num_workers=8)
 
-    FULL_FINETUNING = wandb.config.squad_is_dev
-
-    if not FULL_FINETUNING:
-        squad_dev_size = int(0.1*len(squad_dataset.train_dataset))
-        squad_dev_indices = np.random.choice(len(squad_dataset.train_dataset), size=squad_dev_size)
-        squad_train_sampler = SubsetRandomSampler(squad_dev_indices,
-                                                generator=torch.Generator().manual_seed(42))
-        squad_train_dataloader = DataLoader(squad_train_dataset,
-                                            sampler=squad_train_sampler,
-                                            batch_size=wandb.config.squad_batch_size,
-                                            collate_fn=squad_collate_fn)
-
-    else:
-        squad_train_dataloader = DataLoader(squad_train_dataset,
-                                            batch_size=wandb.config.squad_batch_size,
-                                            collate_fn=squad_collate_fn)
 
     squad_validation_dataset = squad_dataset.validation_dataset
     squad_validation_dataloader = DataLoader(squad_validation_dataset,
                                             batch_size=wandb.config.squad_batch_size,
-                                            collate_fn=squad_collate_fn)
-
-    model_masked_lm = BertForMaskedLM.from_pretrained('bert-base-uncased')
-
-     # TODO: move this to the config zone
-
-    wikipedia_cbor = WikipediaCBOR("wikipedia/car-wiki2020-01-01/enwiki2020.cbor", "wikipedia/car-wiki2020-01-01/partitions",
-                                        # top 2% most frequent items,  roughly at least 100 occurrences, with a total of  ~ 20000 entities
-                                        # cutoff_frequency=0.02, recount=True 
-                                        # TODO: is this representative enough?
-    )
+                                            collate_fn=squad_collate_fn,
+                                            num_workers=8)
 
 
+    pretraining_model = EntitiesAsExperts.from_pretrained("pretraining_eae_one_epoch", run_id)
 
-    pretraining_model = load_model(EntitiesAsExperts,
-                                    "pretraining_eae_one_epoch",
-                                    model_masked_lm,
-                                    wandb.config.eae_l0,
-                                    wandb.config.eae_l1,
-                                    30703, wandb.config.eae_entity_embedding_size)
-
-
+    """
 
     DEVICE = get_available_device()
     # TODO: make sure that while training a model gets moved to the DEVICE
@@ -151,9 +117,25 @@ def main():
     scheduler = get_schedule(squad_epochs, optimizer, squad_train_dataloader)
 
     train_model(model_qa, squad_train_dataloader, squad_validation_dataloader,
-                    parse_batch, optimizer, scheduler, squad_epochs, my_metric, gradient_accumulation_factor=1)
+                    parse_batch, optimizer, scheduler, squad_epochs, my_metric,
+                    gradient_accumulation_factor=wandb.config.squad_gradient_accum_size)
 
+
+    save_models(squad_qa_5epoch_dev=model_qa)
+    
+    """
+
+    print(pretraining_model)
+    print(pretraining_model.config)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(  
+        description='Perform evaluation on SQuAD')
+    parser.add_argument(
+        '--run_id', type=str, required=True,
+        help='The W&B run identifier of the EaE checkpoint.')
+
+    args = parser.parse_args()  
+
+    main(args.run_id)

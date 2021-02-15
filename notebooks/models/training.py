@@ -2,6 +2,8 @@
 A set of training helpers
 """
 
+import json
+import os
 from typing import Callable, Optional, List, Tuple, Any
 
 import deprecated
@@ -9,6 +11,7 @@ import torch
 from torch.nn import Module
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
+
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from transformers import AdamW, get_linear_schedule_with_warmup
@@ -42,12 +45,14 @@ class MetricWrapper:
         self.reset()
         self.dataloader_length = len(dataloader)
 
-    def add_batch(self, _inputs, _outputs, loss: float):
+    def add_batch(self, _inputs, _outputs, loss: torch.tensor):
         """Add a batch
+
+        This step must update wandb with the number of 
 
         :param _inputs
         :param _outputs
-        :param loss the loss of the model
+        :param loss the loss of the model (must be moved to cpu)
         """
         self.loss += float(loss)
     
@@ -78,6 +83,8 @@ def train_log(
     if verbose:
         print(f"Loss after " + str(example_ct).zfill(5) +
               f" examples: {loss:.3f}")
+    
+    # TODO: log mismatching examples...
 
 # pylint: disable(too-many-arguments)
 def train_model(
@@ -115,10 +122,11 @@ def train_model(
     if metric is None:
         metric = MetricWrapper(validation_dataloader)
 
+    example_ct = 0
+
     for epoch in range(epochs):
         model.train()
 
-        example_ct = 0
 
         pending_updates = False
 
@@ -158,12 +166,14 @@ def train_model(
 
         with torch.no_grad():
             for batch in tqdm(validation_dataloader):
-                model_inputs, metric_inputs = load_from_dataloader(batch)
-                inputs = [elem.to(DEVICE) for elem in model_inputs]
+                model_input, metric_input = load_from_dataloader(batch)
+                example_ct += len(model_input)
 
+                inputs = [elem.to(DEVICE) for elem in model_input]
+    
                 loss, *outputs = model(*inputs)
 
-                metric.add_batch(model_inputs + metric_inputs, outputs, loss)
+                metric.add_batch(model_input + metric_input, outputs, loss)
 
         metric.compute(epoch)
 
@@ -209,30 +219,22 @@ def get_schedule(epochs, optimizer, train_dataloader):
         num_training_steps=total_steps
     )
 
-@deprecated.deprecated("TODO: Migrate to W&B")
-def save_models(**kwargs):
+def save_models(format='h5', **kwargs):
     """
     Save the models
 
     >>> save_models(common_model=common_model, bioclassifier= bioclassifier)
 
     All the kwarg parameters must be `Module`s.
+    If the models have a config attribute then it will be saved as well.
     """
 
     for key, value in kwargs.items():
-        path = get_filename_path(f"eae/{key}.pt")
-        torch.save(value.state_dict(), path)
+        model_path = os.path.join(f"{wandb.run.dir}/{key}.{format}")
+        torch.save(value.state_dict(), model_path)
 
-@deprecated.deprecated("TODO: Migrate to W&B")
-def load_model(model: type, saved_model_name: str, *args, **kwargs):
-    """
-    Load a given model.
-
-    :param model a class that inherits from Pytorch's Module
-    :param path_name the saved name of the model
-    """
-    model = model(*args, **kwargs)
-    model.load_state_dict(torch.load(
-        get_filename_path(f"eae/{saved_model_name}.pt"), map_location=torch.device('cpu')))
-
-    return model
+        config = getattr(value, "config", None)
+        if config:
+            config_path = os.path.join(f"{wandb.run.dir}/{key}.json")
+            with open(config_path, "w") as f:
+                json.dump(config, f)

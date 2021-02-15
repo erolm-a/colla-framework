@@ -2,13 +2,17 @@
 An implementation of Entities As Experts.
 """
 
-from typing import Optional, Tuple
 from copy import deepcopy
+import json
+import os
+from typing import Optional, Tuple, Union
 
 import torch
 from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLoss
 import torch.nn.functional as F
 from transformers import BertForMaskedLM
+import wandb
+
 from .device import get_available_device
 
 DEVICE = get_available_device()
@@ -130,7 +134,7 @@ class EntityMemory(Module):
         # pylint:disable=invalid-name
         self.W_b = Linear(self.d_ent, embedding_size)
         # pylint:disable=invalid-name
-        self.E = Linear(self.N, self.d_ent)
+        self.E = Linear(self.N, self.d_ent, bias=False)
         # TODO: Do not make these hardcoded.
         # The BIO class used to hold these but it got deprecated...
         self.begin = 1
@@ -141,8 +145,10 @@ class EntityMemory(Module):
     
     def _get_last_mention(self, bio_output, pos):
         end_mention = pos[1]
-        while end_mention < self.d_emb and bio_output[pos[0], end_mention] == self.inner:
-            end_mention += 1
+
+        for end_mention in range(pos[1] + 1, bio_output.size(1)):
+            if bio_output[pos[0], end_mention] != self.inner:
+                break
         end_mention -= 1
 
         return end_mention
@@ -180,8 +186,6 @@ class EntityMemory(Module):
             else:
                 loss = None
 
-
-
             begin_positions = torch.nonzero(bio_output == self.begin)
 
             # if no mentions are detected skip the entity memory.
@@ -193,8 +197,6 @@ class EntityMemory(Module):
             end_positions = torch.tensor([
                 self._get_last_mention(bio_output, pos) for pos in begin_positions]).unsqueeze(1).to(DEVICE)
 
-            print(end_positions)
-
         # Create an array of:
         # 3 dimensions:
         # [ batch_idx1, batch_idx2, batch_idx3... ]
@@ -202,13 +204,9 @@ class EntityMemory(Module):
         # [ end_idx1, end_idx2, end_idx3 ]
 
         positions = torch.cat([begin_positions, end_positions], 1).T
-        print("BIO positions: ", positions.size()) # expected: (3 x something)
 
         first = X[positions[0], positions[1]]
         second = X[positions[0], positions[2]]
-
-        print("First size: ", first.size()) # expected: (something x 768)
-        print("Second size: ", second.size()) # expected: (something x 768)
 
         mention_span = torch.cat([first, second], 1).to(DEVICE)
         pseudo_entity_embedding = self.W_f(mention_span) # num_of_mentions x d_ent
@@ -217,25 +215,31 @@ class EntityMemory(Module):
         # Not sure why Pylint thinks self.train is a constant
         # pylint: disable=using-constant-test
         if self.train and bio_output is not None and entities_output is not None:
-            alpha = F.softmax(self.E.weight.T.matmul(
-                pseudo_entity_embedding), dim=1)
-            picked_entity = self.E.weight.matmul(alpha) + self.E.bias
+            alpha = F.softmax(
+                pseudo_entity_embedding.matmul(self.E.weight), dim=1)
+
+            # shape: B x d_ent
+            picked_entity = self.E(alpha)
         
         else:
             # K nearest neighbours
             topk = torch.topk(self.E.weight.T.matmul(
-                pseudo_entity_embedding), k)
+                pseudo_entity_embedding.T), k, dim=1)
 
             alpha = F.softmax(topk.values, dim=1)
 
-            picked_entity = self.E.weight[:, topk.indices].matmul(alpha) + self.E.bias
+            # mat1 has size (M x d_ent x k), mat2 has size (M x k x 1)
+            # the result has size (M x 256 x 1). Squeeze that out and we've got our
+            # entities of size (M x 256)
+            picked_entity = torch.bmm(self.E.weight[:, topk.indices].swapaxes(0, 1),
+                                      alpha.view((-1, k, 1))).squeeze()
 
         y[positions[0], positions[1]] = self.W_b(picked_entity)
 
         # Compared to the original paper we use NLLoss.
         # Gradient-wise this should not change anything
         if calculate_loss:
-            loss = loss(alpha, entities_output[positions[0], positions[1]])
+            loss = self.loss(alpha, entities_output[positions[0], positions[1]])
         else:
             loss = None
         return loss, y
@@ -284,20 +288,21 @@ class EntitiesAsExperts(Module):
         self.first_block = TruncatedModel(bert_masked_language_model.bert, l0)
         self.second_block = TruncatedModelSecond(
             bert_masked_language_model.bert, l1)
-        self.config = bert_masked_language_model.config
-        self.entity_memory = EntityMemory(self.config.hidden_size, entity_size,
+        self._config = bert_masked_language_model.config
+        self.entity_memory = EntityMemory(self._config.hidden_size, entity_size,
                                           entity_embedding_size)
-        self.bioclassifier = BioClassifier(self.config)
+        self.bioclassifier = BioClassifier(self._config)
         self.tokenpred = TokenPred(bert_masked_language_model)
         self.layernorm = LayerNorm((768,))
 
     def forward(
         self,
         input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor,
-        entity_outputs: Optional[torch.LongTensor] = None,
-        mention_boundaries: Optional[torch.LongTensor] = None,
         output_ids: Optional[torch.LongTensor] = None,
+        entity_outputs: Optional[torch.LongTensor] = None,
+        _actual_entity_outputs: Optional[torch.LongTensor] = None, # not clear if we need to perform Entity Prediction and supervise with that.
+        mention_boundaries: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
         token_type_ids: Optional[torch.LongTensor] = None
     ):
         """
@@ -341,13 +346,59 @@ class EntitiesAsExperts(Module):
         if compute_loss:
             loss_fct = CrossEntropyLoss()
             token_pred_loss = loss_fct(
-                token_prediction_scores.view(-1, self.config.vocab_size),
+                token_prediction_scores.view(-1, self._config.vocab_size),
                 output_ids.view(-1))
             loss = entity_loss + bio_loss + token_pred_loss
         else:
             loss = None
 
         return loss, token_prediction_scores, X
+    
+    @staticmethod
+    def from_pretrained(config: str, run_id: str):
+        """
+        Load a pretrained model. Probe wandb to get the right checkpoint to use
+
+        :param config the configuration to use
+        :run_id the run identifier that states where it has been saved. 
+        """
+
+
+        checkpoint_path = config + ".h5"
+        model_config_path = config + ".json"
+
+        checkpoint = wandb.restore(checkpoint_path, f"EntitiesAsExperts/{run_id}")
+        model_json = wandb.restore(model_config_path, f"EntitiesAsExperts/{run_id}")
+
+        config = json.load(model_json)
+
+        config = deepcopy(config) 
+
+        language_model_variant = "language_model_pretrained_variant"
+
+        bert_model = BertForMaskedLM.from_pretrained(config[language_model_variant])
+
+        del config[language_model_variant]
+
+        model = EntitiesAsExperts(bert_model, **config)
+
+        model.load_state_dict(torch.load(checkpoint, map_location=torch.device('cpu')))
+
+        return model
+    
+    @property
+    def config(self):
+        """
+        A configuration dict to be used when loading or saving a model.
+        """
+        # TODO: extract from the constructor
+        return {
+            "l0": 4,
+            "l1": 8,
+            "language_model_pretrained_variant": "bert-base-uncased",
+            "entity_size": 30703,
+            "entity_embedding_size": 256
+        }
 
 
 class EaEForQuestionAnswering(Module):
@@ -364,6 +415,7 @@ class EaEForQuestionAnswering(Module):
         super().__init__()
         self.eae = eae
         self.qa_outputs = Linear(eae.config.hidden_size, 2)
+        self.config = eae.config
 
     def forward(
         self,
