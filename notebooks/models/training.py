@@ -122,19 +122,19 @@ def train_model(
     if metric is None:
         metric = MetricWrapper(validation_dataloader)
 
-    example_ct = 0
+    # example_ct = 0
+    train_example_ct = 0
+    #validation_example_ct = 0
 
     for epoch in range(epochs):
         model.train()
-
-
         pending_updates = False
 
         for batch_idx, batch in enumerate(tqdm(train_dataloader)):
-            model_input, _ = load_from_dataloader(batch)
-            inputs = [elem.to(DEVICE) for elem in model_input]
+            keys, model_input, _ = load_from_dataloader(batch)
+            inputs = dict([(key, elem.to(DEVICE)) for key, elem in zip(keys, model_input)])
 
-            loss, *_ = model(*inputs)
+            loss, *_ = model(**inputs)
             loss.backward()
             pending_updates = True
 
@@ -147,10 +147,10 @@ def train_model(
                 model.zero_grad()
                 pending_updates = False
 
-            example_ct += len(model_input)
+            train_example_ct += len(model_input)
 
             if (batch_idx + 1) % 25 == 0:
-                train_log(loss, example_ct, epoch)
+                train_log(loss, train_example_ct, epoch)
                 
                 
         if pending_updates:
@@ -166,12 +166,10 @@ def train_model(
 
         with torch.no_grad():
             for batch in tqdm(validation_dataloader):
-                model_input, metric_input = load_from_dataloader(batch)
-                example_ct += len(model_input)
-
-                inputs = [elem.to(DEVICE) for elem in model_input]
+                keys, model_input, metric_input = load_from_dataloader(batch)
+                inputs = dict([(key, elem.to(DEVICE)) for key, elem in zip(keys, model_input)])
     
-                loss, *outputs = model(*inputs)
+                loss, *outputs = model(**inputs)
 
                 metric.add_batch(model_input + metric_input, outputs, loss)
 

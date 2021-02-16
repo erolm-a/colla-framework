@@ -5,7 +5,7 @@ import datasets
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from transformers import BertForMaskedLM, BertForTokenClassification
+from transformers import BertForMaskedLM, BertForTokenClassification, BertForQuestionAnswering
 
 import wandb
 
@@ -16,6 +16,13 @@ from models.training import train_model, get_optimizer, get_schedule, MetricWrap
 from models import EntitiesAsExperts, EaEForQuestionAnswering
 from models.device import get_available_device
 
+class BertQAWrapper(BertForQuestionAnswering):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, *args, **kwargs):
+        result = super().forward(*args, **kwargs)
+        return result.loss, result.start_logits, result.end_logits
 
 def parse_batch(batch):
     input_ids = torch.tensor(batch['input_ids'])
@@ -24,7 +31,9 @@ def parse_batch(batch):
     start = torch.tensor(batch['answer_start'])
     end = torch.tensor(batch['answer_end'])
     
-    return (input_ids, attention_mask, token_type_ids, start, end), (batch,)
+    return (("input_ids", "attention_mask", "token_type_ids", "start_positions", "end_positions"),
+            (input_ids, attention_mask, token_type_ids, start, end),
+            (batch,))
 
 class SQuADMetric(MetricWrapper):
     def __init__(self, squad_dataset: SQuADDataloader):
@@ -34,9 +43,11 @@ class SQuADMetric(MetricWrapper):
     def reset(self):
         self.squad_metric = datasets.load_metric('squad')
         self.loss = 0.0
+        self.n = 0
     
     def add_batch(self, inputs, outputs, loss: torch.tensor):
         self.loss += float(loss)
+        self.n += len(inputs[0][0])
         
         batch_input = inputs[-1]
 
@@ -70,7 +81,7 @@ class SQuADMetric(MetricWrapper):
         wandb.log({'exact_match': metric_loss['exact_match'],
                      'epoch': epoch,
                      'f1': metric_loss['f1'],
-                     'val_loss': self.loss})
+                     'val_loss': self.loss / self.n })
 
 
 
@@ -85,7 +96,6 @@ def main(run_id: str):
 
     # TODO: this causes a Type Error as it returns a None. Why is that?
     squad_train_dataset = squad_dataset.dev_dataset if wandb.config.squad_is_dev else squad_dataset.train_dataset
-    squad_train_dataset = squad_dataset.train_dataset
     squad_train_dataloader = DataLoader(squad_train_dataset,
                                         batch_size=wandb.config.squad_batch_size,
                                         collate_fn=squad_collate_fn,
@@ -99,21 +109,20 @@ def main(run_id: str):
                                             num_workers=8)
 
 
-    pretraining_model = EntitiesAsExperts.from_pretrained("pretraining_eae_one_epoch", run_id)
-
-    """
+    #pretraining_model = EntitiesAsExperts.from_pretrained("pretraining_eae_one_epoch", run_id)
 
     DEVICE = get_available_device()
     # TODO: make sure that while training a model gets moved to the DEVICE
-    model_qa = EaEForQuestionAnswering(pretraining_model).to(DEVICE)
-
-    #wandb.watch(model_qa)
+    #model_qa = EaEForQuestionAnswering(pretraining_model).to(DEVICE)
+    model_qa = BertQAWrapper.from_pretrained("bert-base-uncased").to(DEVICE)
+    
+    # wandb.watch(model_qa)
 
     my_metric = SQuADMetric(squad_dataset)
 
     squad_epochs = wandb.config.squad_epochs
 
-    optimizer = get_optimizer(pretraining_model)
+    optimizer = get_optimizer(model_qa)
     scheduler = get_schedule(squad_epochs, optimizer, squad_train_dataloader)
 
     train_model(model_qa, squad_train_dataloader, squad_validation_dataloader,
@@ -122,8 +131,6 @@ def main(run_id: str):
 
 
     save_models(squad_qa_5epoch_dev=model_qa)
-    
-    """
 
     print(pretraining_model)
     print(pretraining_model.config)

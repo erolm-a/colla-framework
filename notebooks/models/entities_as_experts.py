@@ -224,14 +224,14 @@ class EntityMemory(Module):
         else:
             # K nearest neighbours
             topk = torch.topk(self.E.weight.T.matmul(
-                pseudo_entity_embedding.T), k, dim=1)
+                pseudo_entity_embedding.T), k, dim=0)
 
             alpha = F.softmax(topk.values, dim=1)
 
             # mat1 has size (M x d_ent x k), mat2 has size (M x k x 1)
             # the result has size (M x 256 x 1). Squeeze that out and we've got our
             # entities of size (M x 256)
-            picked_entity = torch.bmm(self.E.weight[:, topk.indices].swapaxes(0, 1),
+            picked_entity = torch.bmm(self.E.weight[:, topk.indices].swapaxes(0, 2).swapaxes(1, 2),
                                       alpha.view((-1, k, 1))).squeeze()
 
         y[positions[0], positions[1]] = self.W_b(picked_entity)
@@ -328,7 +328,7 @@ class EntitiesAsExperts(Module):
                                          labels=mention_boundaries)
 
         if not compute_loss:
-            bio_choices = torch.argmax(bio_outputs[1], 2)
+            bio_choices = torch.argmax(bio_outputs, 2)
             mention_boundaries = bio_choices
         
         entity_memory_outputs = self.entity_memory(
@@ -366,12 +366,10 @@ class EntitiesAsExperts(Module):
 
         checkpoint_path = config + ".h5"
         model_config_path = config + ".json"
-
-        checkpoint = wandb.restore(checkpoint_path, f"EntitiesAsExperts/{run_id}")
-        model_json = wandb.restore(model_config_path, f"EntitiesAsExperts/{run_id}")
+        
+        model_json = wandb.restore(model_config_path, run_id)
 
         config = json.load(model_json)
-
         config = deepcopy(config) 
 
         language_model_variant = "language_model_pretrained_variant"
@@ -379,10 +377,12 @@ class EntitiesAsExperts(Module):
         bert_model = BertForMaskedLM.from_pretrained(config[language_model_variant])
 
         del config[language_model_variant]
+        
+        checkpoint = wandb.restore(checkpoint_path, run_id)
 
         model = EntitiesAsExperts(bert_model, **config)
 
-        model.load_state_dict(torch.load(checkpoint, map_location=torch.device('cpu')))
+        model.load_state_dict(torch.load(checkpoint.buffer.raw, map_location=torch.device('cpu')))
 
         return model
     
@@ -397,7 +397,8 @@ class EntitiesAsExperts(Module):
             "l1": 8,
             "language_model_pretrained_variant": "bert-base-uncased",
             "entity_size": 30703,
-            "entity_embedding_size": 256
+            "entity_embedding_size": 256,
+            "hidden_size": self._config.hidden_size
         }
 
 
@@ -414,7 +415,7 @@ class EaEForQuestionAnswering(Module):
         """
         super().__init__()
         self.eae = eae
-        self.qa_outputs = Linear(eae.config.hidden_size, 2)
+        self.qa_outputs = Linear(eae.config["hidden_size"], 2)
         self.config = eae.config
 
     def forward(
