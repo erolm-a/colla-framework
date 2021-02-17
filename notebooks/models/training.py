@@ -177,12 +177,13 @@ def train_model(
 
 
 
-def get_optimizer(model: Module, full_finetuning=False):
+def get_optimizer(model: Module, learning_rate: float, full_finetuning=False):
     """
-    Get an optimizer
+    Initialize an AdamW optimizer.
 
     :param model a PyTorch model
     :param full_finetuning if True perform full finetuning
+    :param learning_rate the learning rate for AdamW
     """
     param_optimizer = list(model.named_parameters())
 
@@ -200,7 +201,7 @@ def get_optimizer(model: Module, full_finetuning=False):
 
     return AdamW(
         optimizer_grouped_parameters,
-        lr=1e-4,
+        lr=learning_rate,
         eps=1e-8
     )
 

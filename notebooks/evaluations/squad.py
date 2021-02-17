@@ -109,12 +109,12 @@ def main(run_id: str):
                                             num_workers=8)
 
 
-    #pretraining_model = EntitiesAsExperts.from_pretrained("pretraining_eae_one_epoch", run_id)
+    pretraining_model = EntitiesAsExperts.from_pretrained("pretraining_eae_one_epoch", run_id)
 
     DEVICE = get_available_device()
     # TODO: make sure that while training a model gets moved to the DEVICE
-    #model_qa = EaEForQuestionAnswering(pretraining_model).to(DEVICE)
-    model_qa = BertQAWrapper.from_pretrained("bert-base-uncased").to(DEVICE)
+    model_qa = EaEForQuestionAnswering(pretraining_model).to(DEVICE)
+    # model_qa = BertQAWrapper.from_pretrained("bert-base-uncased").to(DEVICE)
     
     # wandb.watch(model_qa)
 
@@ -122,7 +122,7 @@ def main(run_id: str):
 
     squad_epochs = wandb.config.squad_epochs
 
-    optimizer = get_optimizer(model_qa)
+    optimizer = get_optimizer(model_qa, learning_rate=float(wandb.config.squad_learning_rate))
     scheduler = get_schedule(squad_epochs, optimizer, squad_train_dataloader)
 
     train_model(model_qa, squad_train_dataloader, squad_validation_dataloader,
@@ -131,9 +131,6 @@ def main(run_id: str):
 
 
     save_models(squad_qa_5epoch_dev=model_qa)
-
-    print(pretraining_model)
-    print(pretraining_model.config)
 
 
 if __name__ == "__main__":

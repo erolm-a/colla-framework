@@ -2,18 +2,24 @@
 eae_pretraining_epochs:
   desc: Number of epochs while pretraining
   value: 5
+eae_wikipedia_article_nums:
+  desc: Number of wikipedia pages to preprocess (DEBUG)
+  value: 100000
 eae_batch_size:
   desc: Batch size while pretraining
   value: 8
 eae_wikipedia_cutoff_frequency:
   desc: Cutoff frequency for the most common entities. 0.05 = 5% of the mentions on Wikipedia (taking the most common ones)
-  value: 0.03
+  value: 0.30
 eae_gradient_accum_size:
   desc: Gradient accumulator multiplier
   value: 8
+eae_is_dev:
+  desc: Whether to train with a small development set or a full set
+  value: False
 eae_full_finetuning:
   desc: Perform full finetuning (slower training)
-  value: false
+  value: False
 eae_l0:
   desc: Depth of first transformer block
   value: 4
@@ -23,6 +29,9 @@ eae_l1:
 eae_entity_embedding_size:
   desc: Entity embedding size
   value: 256
+eae_learning_rate:
+  desc: Learning rate used when setting up the Adam optimizer while finetuning for SQuAD
+  value: 1e-4
 
 squad_epochs:
   desc: Number of epochs while finetuning for SQuAD
@@ -33,12 +42,26 @@ squad_is_dev:
 squad_batch_size:
   desc: Batch size while finetuning for SQuAD
   value: 8
+squad_gradient_accum_size:
+  desc: Gradient accumulator multiplier for SQuAD
+  value: 4
+squad_learning_rate:
+  desc: Learning rate used when setting up the Adam optimizer while finetuning for SQuAD
+  value: 1e-4
+squad_full_finetuning:
+  desc: Whether to apply weigth decay on a number of optimizer parameters except for bias, gamma, or beta.
+  value: False
+
 triviaqa_epochs:
   desc: Number of epochs while finetuning for TriviaQA
   value: 5
 triviaqa_batch_size:
   desc: Batch size while finetuning for TriviaQA
   value: 8
+triviaqa_learning_rate:
+  desc: learning rate used when setting up the adam optimizer
+  value: 5e-6
+
 device:
   desc: Device to train on. If cuda is chosen the model will try to pick one gpu, or resort to CPU training if no gpu is available
   value: cuda
