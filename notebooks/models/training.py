@@ -48,13 +48,11 @@ class MetricWrapper:
     def add_batch(self, _inputs, _outputs, loss: torch.tensor):
         """Add a batch
 
-        This step must update wandb with the number of 
-
         :param _inputs
         :param _outputs
         :param loss the loss of the model (must be moved to cpu)
         """
-        self.loss += float(loss)
+        self.loss += float(loss.detach().cpu())
     
     def compute(self, epoch: int) -> float:
         """
@@ -77,7 +75,6 @@ def train_log(
     epoch: int,
     verbose=False
 ):
-    loss = float(loss)
 
     wandb.log({"train_loss": loss, "epoch": epoch}, step=example_ct)
     if verbose:
@@ -134,8 +131,14 @@ def train_model(
             keys, model_input, _ = load_from_dataloader(batch)
             inputs = dict([(key, elem.to(DEVICE)) for key, elem in zip(keys, model_input)])
 
-            loss, *_ = model(**inputs)
+            loss = model(**inputs)[0]
+
+            # Force the GC to delete inputs in order to free up memory.
+            del inputs
+
             loss.backward()
+
+            loss = float(loss)
             pending_updates = True
 
             clip_grad_norm_(parameters=model.parameters(),
@@ -170,8 +173,11 @@ def train_model(
                 inputs = dict([(key, elem.to(DEVICE)) for key, elem in zip(keys, model_input)])
     
                 loss, *outputs = model(**inputs)
+                del inputs
 
-                metric.add_batch(model_input + metric_input, outputs, loss)
+                loss = float(loss)
+
+                metric.add_batch(model_input + metric_input, outputs.detach(), loss)
 
         metric.compute(epoch)
 

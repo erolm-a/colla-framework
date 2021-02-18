@@ -197,12 +197,8 @@ class EntityMemory(Module):
             end_positions = torch.tensor([
                 self._get_last_mention(bio_output, pos) for pos in begin_positions]).unsqueeze(1).to(DEVICE)
 
-        # Create an array of:
-        # 3 dimensions:
-        # [ batch_idx1, batch_idx2, batch_idx3... ]
-        # [ start_idx1, start_idx2, start_idx3... ]
-        # [ end_idx1, end_idx2, end_idx3 ]
-
+        # Create the tensor so that it contains the batch position, the begin_positions and the end positions
+        # Then reshape so that they are row_based:
         positions = torch.cat([begin_positions, end_positions], 1).T
 
         first = X[positions[0], positions[1]]
@@ -234,14 +230,21 @@ class EntityMemory(Module):
             picked_entity = torch.bmm(self.E.weight[:, topk.indices].swapaxes(0, 2).swapaxes(1, 2),
                                       alpha.view((-1, k, 1))).squeeze()
 
+        
         y[positions[0], positions[1]] = self.W_b(picked_entity)
 
         # Compared to the original paper we use NLLoss.
         # Gradient-wise this should not change anything
         if calculate_loss:
+            #print(alpha.shape)
+            #alpha_sum = torch.sum(alpha, dim=1)
+            #alpha_sum.require_grad=False
+            #assert(alpha_sum, torch.ones(alpha.size(0)), f"Alphas are not normalized here. Sum: {repr(alpha_sum)}")
+            #print(entities_output[positions[0], positions[1]].shape)
             loss = self.loss(alpha, entities_output[positions[0], positions[1]])
         else:
             loss = None
+        
         return loss, y
 
 
@@ -295,6 +298,8 @@ class EntitiesAsExperts(Module):
         self.tokenpred = TokenPred(bert_masked_language_model)
         self.layernorm = LayerNorm((768,))
 
+        self.loss_fct = CrossEntropyLoss()
+
     def forward(
         self,
         input_ids: torch.LongTensor,
@@ -331,10 +336,8 @@ class EntitiesAsExperts(Module):
             bio_choices = torch.argmax(bio_outputs, 2)
             mention_boundaries = bio_choices
         
-        entity_memory_outputs = self.entity_memory(
+        entity_loss, entity_outputs = self.entity_memory(
             X, mention_boundaries, entity_outputs)
-
-        entity_loss, entity_outputs = entity_memory_outputs
 
         X = self.second_block(self.layernorm(entity_outputs + X),
                               encoder_attention_mask=attention_mask)
@@ -344,10 +347,14 @@ class EntitiesAsExperts(Module):
         # calculate loss for token prediction
         # Abdridged from transformers's doc
         if compute_loss:
-            loss_fct = CrossEntropyLoss()
-            token_pred_loss = loss_fct(
+            token_pred_loss = self.loss_fct(
                 token_prediction_scores.view(-1, self._config.vocab_size),
                 output_ids.view(-1))
+
+            assert(entity_loss >= 0.0, "Entity loss must be positive")
+            assert(bio_loss >= 0.0, "Bio loss must be positive")
+            assert(token_pred_loss >= 0.0, "Token pred must be positive")
+
             loss = entity_loss + bio_loss + token_pred_loss
         else:
             loss = None

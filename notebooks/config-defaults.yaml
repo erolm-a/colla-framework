@@ -31,13 +31,14 @@ eae_entity_embedding_size:
   value: 256
 eae_learning_rate:
   desc: Learning rate used when setting up the Adam optimizer while finetuning for SQuAD
-  value: 1e-4
+  value: 1.e-4
 
+# TODO: split the file, there is no reason why I should use the same configuration file for all the evaluation scripts...
 squad_epochs:
   desc: Number of epochs while finetuning for SQuAD
   value: 5
 squad_is_dev:
-  desc: "Train only on a small development set"
+  desc: Train only on a small development set
   value: True
 squad_batch_size:
   desc: Batch size while finetuning for SQuAD
@@ -47,7 +48,7 @@ squad_gradient_accum_size:
   value: 4
 squad_learning_rate:
   desc: Learning rate used when setting up the Adam optimizer while finetuning for SQuAD
-  value: 1e-4
+  value: 1.e-4
 squad_full_finetuning:
   desc: Whether to apply weigth decay on a number of optimizer parameters except for bias, gamma, or beta.
   value: False
@@ -58,10 +59,19 @@ triviaqa_epochs:
 triviaqa_batch_size:
   desc: Batch size while finetuning for TriviaQA
   value: 8
+triviaqa_gradient_accum_size:
+  desc: Gradient accumulator multiplier for SQuAD
+  value: 4
 triviaqa_learning_rate:
   desc: learning rate used when setting up the adam optimizer
-  value: 5e-6
+  value: 5.e-6
+triviaqa_full_finetuning:
+  desc: Whether to apply weigth decay on a number of optimizer parameters except for bias, gamma, or beta for SQuAD
+  value: False
 
+
+
+# TODO: This is not a hyperparameter. This should be an environment variable imo.
 device:
   desc: Device to train on. If cuda is chosen the model will try to pick one gpu, or resort to CPU training if no gpu is available
   value: cuda
