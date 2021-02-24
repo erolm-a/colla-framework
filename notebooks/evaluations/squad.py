@@ -45,8 +45,8 @@ class SQuADMetric(MetricWrapper):
         self.loss = 0.0
         self.n = 0
     
-    def add_batch(self, inputs, outputs, loss: torch.tensor):
-        self.loss += float(loss)
+    def add_batch(self, inputs, outputs, loss: float):
+        self.loss += loss
         self.n += len(inputs[0][0])
         
         batch_input = inputs[-1]

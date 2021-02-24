@@ -173,6 +173,8 @@ class EntityMemory(Module):
                   None loss will be None as well.
         """
 
+        assert not self.training() or (bio_output and entities_output), \
+            "Cannot perform training without bio_output and entites_output"
 
         y = torch.zeros_like(X).to(DEVICE)
 
@@ -205,12 +207,11 @@ class EntityMemory(Module):
         second = X[positions[0], positions[2]]
 
         mention_span = torch.cat([first, second], 1).to(DEVICE)
+
         pseudo_entity_embedding = self.W_f(mention_span) # num_of_mentions x d_ent
 
         # During training consider the whole entity dictionary
-        # Not sure why Pylint thinks self.train is a constant
-        # pylint: disable=using-constant-test
-        if self.train and bio_output is not None and entities_output is not None:
+        if self.training():
             alpha = F.softmax(
                 pseudo_entity_embedding.matmul(self.E.weight), dim=1)
 
@@ -236,15 +237,20 @@ class EntityMemory(Module):
         # Compared to the original paper we use NLLoss.
         # Gradient-wise this should not change anything
         if calculate_loss:
-            #print(alpha.shape)
-            #alpha_sum = torch.sum(alpha, dim=1)
-            #alpha_sum.require_grad=False
-            #assert(alpha_sum, torch.ones(alpha.size(0)), f"Alphas are not normalized here. Sum: {repr(alpha_sum)}")
-            #print(entities_output[positions[0], positions[1]].shape)
+            alpha = torch.log(alpha)
             loss = self.loss(alpha, entities_output[positions[0], positions[1]])
         else:
             loss = None
         
+        """
+        del pseudo_entity_embedding
+        del picked_entity
+
+        del first
+        del second
+        del alpha
+        """
+
         return loss, y
 
 
@@ -351,9 +357,9 @@ class EntitiesAsExperts(Module):
                 token_prediction_scores.view(-1, self._config.vocab_size),
                 output_ids.view(-1))
 
-            assert(entity_loss >= 0.0, "Entity loss must be positive")
-            assert(bio_loss >= 0.0, "Bio loss must be positive")
-            assert(token_pred_loss >= 0.0, "Token pred must be positive")
+            # assert entity_loss >= 0.0, "Entity loss must be positive"
+            # assert bio_loss >= 0.0, "Bio loss must be positive" 
+            # assert token_pred_loss >= 0.0, "Token pred must be positive"
 
             loss = entity_loss + bio_loss + token_pred_loss
         else:

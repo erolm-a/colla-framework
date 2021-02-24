@@ -2,9 +2,10 @@
 A set of training helpers
 """
 
+from abc import ABC, abstractmethod
 import json
 import os
-from typing import Callable, Optional, List, Tuple, Any
+from typing import Callable, Optional, List, Tuple, Any, Union
 
 import deprecated
 import torch
@@ -45,14 +46,16 @@ class MetricWrapper:
         self.reset()
         self.dataloader_length = len(dataloader)
 
-    def add_batch(self, _inputs, _outputs, loss: torch.tensor):
+    def add_batch(self, _inputs, _outputs: List, loss: float):
         """Add a batch
 
         :param _inputs
-        :param _outputs
-        :param loss the loss of the model (must be moved to cpu)
+        :param _outputs: a list of outputs from the model.
+               The training loop is type-agnostic, but is known to return a list of return values
+               (or just a singleton). 
+        :param loss the loss of the model
         """
-        self.loss += float(loss.detach().cpu())
+        self.loss += loss
     
     def compute(self, epoch: int) -> float:
         """
@@ -69,32 +72,106 @@ class MetricWrapper:
         self.loss = 0.0
 
 
-def train_log(
-    loss: float,
-    example_ct: int,
-    epoch: int,
-    verbose=False
-):
-
-    wandb.log({"train_loss": loss, "epoch": epoch}, step=example_ct)
-    if verbose:
-        print(f"Loss after " + str(example_ct).zfill(5) +
-              f" examples: {loss:.3f}")
+class ModelTrainer(ABC):
+    """
+    A wrapper on trainers that performs logging, example collection and other goodies.
     
-    # TODO: log mismatching examples...
+    Default methods are implemented, but callers should override according to the needs.
 
-# pylint: disable(too-many-arguments)
-def train_model(
+    At least, the caller must define load_from_dataloader.
+
+    Yes. This is a clone of Pytorch's Lighting. I am so ashamed of this code.
+    """
+
+    def __init__(
+        self,
         model: Module,
+        enable_wandb=True,
+        watch_wandb=True):
+        """
+        :param model a module to track.
+               The module must have a forward that returns a pair (loss, something).
+        :param optimizer the model optimizer.
+        :param scheduler the module scheduler
+        :param enable_wandb whether to enable wandb logging and example reporting
+        :param watch_wandb whether to track the model with wandb.
+        """
+        self.enable_wandb = enable_wandb
+        self.model = model
+        self.model.train()
+
+        if watch_wandb:
+            wandb.watch(model)
+    
+    @property
+    def training(self) -> bool:
+        """
+        Wrapper over model.training()
+        """
+        return self.training()
+
+    @training.property
+    def training(self, new_value: bool):
+        """
+        Wrapper over model.train()
+        """
+        self.model.train(new_value)
+
+    @staticmethod
+    @abstractmethod
+    def load_from_dataloader(batch) -> Union[List[torch.tensor], Tuple[List[torch.tensor], Any]]:
+        """
+        :param batch a batch loaded from a given data loader
+
+        If training this method should return a list of tensors for training.
+        Otherwise, this should return a pair of such tensors and other useful metric data.
+        """
+        pass
+
+    def step(self, batch, metric: MetricWrapper) -> Optional[torch.tensor]:
+        """
+        :param metric if evaluating, metric.add_batch() will be called. Otherwise it will be ignored
+        """
+        if self.training:
+            model_input = self.load_from_dataloader(batch)
+            inputs = [elem.to(DEVICE) for elem in model_input]
+            loss, _ = self.model(*inputs)
+
+            return loss
+        else:
+            model_input, metric_input = self.load_from_dataloader(batch)
+            inputs = [elem.to(DEVICE) for elem in model_input]
+            loss, outputs = self.model(*inputs)
+            loss = float(loss)
+            metric.add_batch(model_input + metric_input, outputs, loss)
+        
+
+    def train_log(self, loss: float, example_ct: int, epoch: int, verbose = False):
+        """
+        Log train step. For the evaluation we rely on MetricWrapper
+        """
+        log_payload = {"train_loss": loss, "epoch": epoch}
+
+        if DEVICE == "cuda":
+            log_payload["gpu_mem_allocated"] = torch.cuda.memory_allocated() 
+        
+        if self.enable_wandb:
+            wandb.log(log_payload, step=example_ct)
+
+    def zero_grad(self):
+        self.model.zero_grad()
+
+
+def train_model(
+        model_trainer: ModelTrainer,
         train_dataloader: DataLoader,
         validation_dataloader: DataLoader,
-        load_from_dataloader: Callable,
         optimizer: Optimizer,
         scheduler: LambdaLR,
         epochs: int,
         metric: Optional[MetricWrapper] = None,
-        gradient_accumulation_factor: int = 4,
-        automatic_mixed_precision: bool = False):
+        gradient_accumulation_factor: int = 4
+    ):
     """
     Train a model.
 
@@ -105,8 +182,6 @@ def train_model(
         The idea is that model_params is entirely made of pytorch tensors that can be moved to
         the gpu, while metric_params contains the parameters for the metric.
 
-    :param optimizer
-    :param scheduler
     :param epochs
     :param metric if provided, a callable that invokes a metric (typically a Dataset.Metric).
            It will be called with params (model_params + metric_params, outputs) where outputs
@@ -119,26 +194,22 @@ def train_model(
     if metric is None:
         metric = MetricWrapper(validation_dataloader)
 
-    # example_ct = 0
     train_example_ct = 0
-    #validation_example_ct = 0
 
     for epoch in range(epochs):
-        model.train()
+        model_trainer.training = True
+        model_trainer.zero_grad()
+
         pending_updates = False
 
         for batch_idx, batch in enumerate(tqdm(train_dataloader)):
-            keys, model_input, _ = load_from_dataloader(batch)
-            inputs = dict([(key, elem.to(DEVICE)) for key, elem in zip(keys, model_input)])
-
-            loss = model(**inputs)[0]
-
-            # Force the GC to delete inputs in order to free up memory.
-            del inputs
+            loss = model_trainer.model_step(batch, metric) / gradient_accumulation_factor
 
             loss.backward()
 
+            loss = loss.detach().cpu()
             loss = float(loss)
+
             pending_updates = True
 
             clip_grad_norm_(parameters=model.parameters(),
@@ -147,37 +218,29 @@ def train_model(
             if (batch_idx + 1) % gradient_accumulation_factor == 0:
                 optimizer.step()
                 scheduler.step()
-                model.zero_grad()
+                model_trainer.zero_grad()
                 pending_updates = False
 
-            train_example_ct += len(model_input)
+            train_example_ct += len(batch[0])
 
             if (batch_idx + 1) % 25 == 0:
-                train_log(loss, train_example_ct, epoch)
+                model_trainer.train_log(loss, example_ct, epoch)
                 
                 
         if pending_updates:
             optimizer.step()
             scheduler.step()
-            model.zero_grad()
+            model_trainer.zero_grad()
             pending_updates = False
 
-        model.eval()
+        model_trainer.eval()
 
         metric.reset()
         model.zero_grad()
 
         with torch.no_grad():
             for batch in tqdm(validation_dataloader):
-                keys, model_input, metric_input = load_from_dataloader(batch)
-                inputs = dict([(key, elem.to(DEVICE)) for key, elem in zip(keys, model_input)])
-    
-                loss, *outputs = model(**inputs)
-                del inputs
-
-                loss = float(loss)
-
-                metric.add_batch(model_input + metric_input, outputs.detach(), loss)
+                model_trainer.step(batch, metric)
 
         metric.compute(epoch)
 
