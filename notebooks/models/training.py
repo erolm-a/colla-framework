@@ -165,36 +165,40 @@ class ModelTrainer(ABC):
 def train_model(
         model_trainer: ModelTrainer,
         train_dataloader: DataLoader,
-        validation_dataloader: DataLoader,
+        validation_dataloader: Optional[DataLoader],
+        testing_dataloader: Optional[DataLoader],
         optimizer: Optimizer,
         scheduler: LambdaLR,
         epochs: int,
+        validation_frequency: int = 100,
         metric: Optional[MetricWrapper] = None,
-        gradient_accumulation_factor: int = 4
+        gradient_accumulation_factor: int = 4,
+        seed = 123456
     ):
     """
     Train a model.
 
-    :param model a Model whose forward returns a tuple with AT LEAST 2 elements.
+    :param model_trainer an instance of ModelTrainer.
     :param train_dataloader a dataloader
-    :param validation_dataloader a dataloader for validation
-    :param load_from_dataloader a callable that returns a pair (model_params, metric_params).
-        The idea is that model_params is entirely made of pytorch tensors that can be moved to
-        the gpu, while metric_params contains the parameters for the metric.
-
+    :param validation_dataloader a dataloader for validation. This gets called after every `validation_frequency` steps.
+           If None no validation step is performed
+    :param testing_dataloader a dataloader for testing.
     :param epochs
-    :param metric if provided, a callable that invokes a metric (typically a Dataset.Metric).
-           It will be called with params (model_params + metric_params, outputs) where outputs
-           are the outputs of the model. If a metric is not provided a default one will be provided.
+    :param validation_frequency how often to perform validation.
     :param gradient_accumulation_factor if provided, accumulate the gradient for the given number
            of steps. This can be useful in order to avoid OOM issues with CUDA.
+    :param seed if provided, set up the seed.
     """
-
 
     if metric is None:
         metric = MetricWrapper(validation_dataloader)
 
     train_example_ct = 0
+
+    if DEVICE == "cuda":
+        torch.cuda.manual_seed(seed)
+    
+
 
     for epoch in range(epochs):
         model_trainer.training = True
@@ -203,48 +207,51 @@ def train_model(
         pending_updates = False
 
         for batch_idx, batch in enumerate(tqdm(train_dataloader)):
-            loss = model_trainer.model_step(batch, metric) / gradient_accumulation_factor
+            if (batch_idx + 1) % validation_frequency != 0:
+                loss = model_trainer.model_step(batch, metric) / gradient_accumulation_factor
 
-            loss.backward()
+                loss.backward()
 
-            loss = loss.detach().cpu()
-            loss = float(loss)
+                loss = loss.detach().cpu()
+                loss = float(loss)
 
-            pending_updates = True
+                pending_updates = True
 
-            clip_grad_norm_(parameters=model.parameters(),
-                            max_norm=MAX_GRAD_NORM)
+                clip_grad_norm_(parameters=model.parameters(),
+                                max_norm=MAX_GRAD_NORM)
 
-            if (batch_idx + 1) % gradient_accumulation_factor == 0:
-                optimizer.step()
-                scheduler.step()
+                if (batch_idx + 1) % gradient_accumulation_factor == 0:
+                    optimizer.step()
+                    scheduler.step()
+                    model_trainer.zero_grad()
+                    pending_updates = False
+
+                train_example_ct += len(batch[0])
+
+                if (batch_idx + 1) % 25 == 0:
+                    model_trainer.train_log(loss, example_ct, epoch)
+            else:
+                model_trainer.training = False
                 model_trainer.zero_grad()
-                pending_updates = False
+                metric.reset()
 
-            train_example_ct += len(batch[0])
+                with torch.no_grad():
+                    for validation_batch in tqdm(validation_dataloader):
+                        model_trainer.step(validation_batch, metric)
 
-            if (batch_idx + 1) % 25 == 0:
-                model_trainer.train_log(loss, example_ct, epoch)
-                
-                
+                metric.compute(epoch)
+
+                model_trainer.training = True
+
         if pending_updates:
+            model_trainer.training = True
             optimizer.step()
             scheduler.step()
             model_trainer.zero_grad()
             pending_updates = False
-
-        model_trainer.eval()
-
-        metric.reset()
-        model.zero_grad()
-
-        with torch.no_grad():
-            for batch in tqdm(validation_dataloader):
-                model_trainer.step(batch, metric)
-
-        metric.compute(epoch)
-
-
+    
+    model_trainer.training = False
+        
 
 def get_optimizer(model: Module, learning_rate: float, full_finetuning=False):
     """

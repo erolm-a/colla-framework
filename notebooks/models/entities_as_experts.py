@@ -8,9 +8,10 @@ import os
 from typing import Optional, Tuple, Union
 
 import torch
-from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLoss
+from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLoss, ModuleList, 
+                     Parameter
 import torch.nn.functional as F
-from transformers import BertForMaskedLM
+from transformers import BertForMaskedLM, BertConfig
 import wandb
 
 from .device import get_available_device
@@ -211,7 +212,7 @@ class EntityMemory(Module):
         pseudo_entity_embedding = self.W_f(mention_span) # num_of_mentions x d_ent
 
         # During training consider the whole entity dictionary
-        if self.training():
+        if self.training() and bio_output and entities_output:
             alpha = F.softmax(
                 pseudo_entity_embedding.matmul(self.E.weight), dim=1)
 
@@ -253,22 +254,94 @@ class EntityMemory(Module):
 
         return loss, y
 
-
-class TokenPred(Module):
+class EaELinearWithLayerNorm(Module):
     """
-    Just a mere wrapper on top of BertForMaskedLM
+    Combine a linear layer with an activation function and a layernorm.
+    This is an intermediate step that can be used shortly after EaEPredictionHead
     """
+    def __init__(self, config: BertConfig):
+        self.classifier_head = ModuleList([
+            self.Linear(config.hidden_size, config.hidden_size),
+            config.hidden_act,
+            LayerNorm(config.hidden_size, eps=config.layer_norm_eps)])
+    
+    def forward(self, hidden_states: torch.tensor):
+        return self.classifier_head(hidden_states)
 
-    def __init__(self, masked_language_model: BertForMaskedLM):
-        """
-        :param masked_language_model an instance of a BertForMaskedLM
-        """
+class EaEPredictionHead(nn.Module):
+    """
+    A reimplementation of :class `BertLMPredictionHead` that is generalizable
+    """
+    def __init__(self, config: BertConfig, output_size: int):
         super().__init__()
-        self.cls = deepcopy(masked_language_model.cls)
+        self.transform = EaELinearWithLayerNorm(config)
 
-    def forward(self, *args, **kwargs):
-        __doc__ = self.cls.forward.__doc__
-        return self.cls(*args, **kwargs)
+        # The output weights are the same as the input embeddings, but there is
+        # an output-only bias for each token.
+        self.decoder = Linear(config.hidden_size, output_size, bias=False)
+
+        self.bias = nn.Parameter(torch.zeros(output_size))
+
+        # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
+        self.decoder.bias = self.bias
+
+    def forward(self, hidden_states: torch.tensor):
+        hidden_states = self.transform(hidden_states)
+        hidden_states = self.decoder(hidden_states)
+        return hidden_states
+
+
+
+class TokenPredHead(Module):
+    """
+    General Token prediction head.
+    It is a common building block for both TokenPred (output_head_number = vocab size) and EntityPred
+    (output_head_number = entity vocab size)
+    """
+
+    def __init__(self, config: BertConfig, output_head_number: int):
+        super().__init__()
+        # TODO: create a new EaEConfig struct
+        self.output_head_number = output_head_number
+        self.cls = EaEPredictionHead(config, output_head_number)
+    
+    def forward(
+        self,
+        sequence_output: torch.tensor,
+        labels: Optional[torch.tensor]
+    ):
+        """
+        :param sequence_output the output of the attention block
+        :param labels the wished labels. The domain size must be output_head_number
+        """
+        prediction_scores = self.cls(sequence_output)
+
+        loss = None
+
+        if labels is not None:
+            loss_fct = CrossEntropyLoss() # -100 index = padding token ?
+            loss = loss_fct(prediction_scores.view(-1, self.output_head_number), labels.view(-1))
+
+
+        return loss, prediction_scores
+
+
+class EntityPred(TokenPredHead):
+    """
+    Entity Predictor head
+    """
+    def __init__(self, config: BertConfig, entity_vocab_size: int):
+        # TODO: create a new EaEConfig struct
+        super().__init(self, config, vocab_size)
+
+
+class TokenPred(TokenPredHead):
+    """
+    Token Prediction head for EaE
+    """
+
+    def __init__(self, config: BertConfig):
+        super().__init__(config, config.vocab_size)
 
 
 class EntitiesAsExperts(Module):
@@ -301,7 +374,8 @@ class EntitiesAsExperts(Module):
         self.entity_memory = EntityMemory(self._config.hidden_size, entity_size,
                                           entity_embedding_size)
         self.bioclassifier = BioClassifier(self._config)
-        self.tokenpred = TokenPred(bert_masked_language_model)
+        self.tokenpred = TokenPred(self._config)
+        self.entitypred = EntityPred(self._config, entity_size)
         self.layernorm = LayerNorm((768,))
 
         self.loss_fct = CrossEntropyLoss()
@@ -314,7 +388,9 @@ class EntitiesAsExperts(Module):
         _actual_entity_outputs: Optional[torch.LongTensor] = None, # not clear if we need to perform Entity Prediction and supervise with that.
         mention_boundaries: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
-        token_type_ids: Optional[torch.LongTensor] = None
+        token_type_ids: Optional[torch.LongTensor] = None,
+        return_scores: bool = True
+        
     ):
         """
         :param input_ids the masked tokenized input of shape B x 512
@@ -323,6 +399,7 @@ class EntitiesAsExperts(Module):
         :param output_ids the unmasked tokenized input of shape B x 512
         :param token_type_ids the token type mask that differentiates between CLS and SEP zones.
             Used for QA.
+        :param return_logits if true return the scores of the token prediction and entity prediction heads.
 
         :returns a triplet loss, logits (for token_pred) and output of the last transformer block
         """
@@ -348,24 +425,16 @@ class EntitiesAsExperts(Module):
         X = self.second_block(self.layernorm(entity_outputs + X),
                               encoder_attention_mask=attention_mask)
 
-        token_prediction_scores = self.tokenpred(X.last_hidden_state)
+        token_pred_loss, token_prediction_scores = self.tokenpred(X.last_hidden_state)
+        entity_pred_loss, entity_prediction_scores = self.entitypred(X.last_hidden_state)
 
-        # calculate loss for token prediction
-        # Abdridged from transformers's doc
+        loss = None
+
         if compute_loss:
-            token_pred_loss = self.loss_fct(
-                token_prediction_scores.view(-1, self._config.vocab_size),
-                output_ids.view(-1))
+            loss = entity_loss + bio_loss + token_pred_loss + entity_pred_loss
 
-            # assert entity_loss >= 0.0, "Entity loss must be positive"
-            # assert bio_loss >= 0.0, "Bio loss must be positive" 
-            # assert token_pred_loss >= 0.0, "Token pred must be positive"
-
-            loss = entity_loss + bio_loss + token_pred_loss
-        else:
-            loss = None
-
-        return loss, token_prediction_scores, X
+        return (loss, token_prediction_scores, X,
+                    (token_prediction_scores, entity_prediction_scores))
     
     @staticmethod
     def from_pretrained(config: str, run_id: str):
