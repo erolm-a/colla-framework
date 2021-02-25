@@ -2,13 +2,17 @@
 A set of training helpers
 """
 
-from typing import Callable, Optional, List, Tuple, Any
+from abc import ABC, abstractmethod
+import json
+import os
+from typing import Callable, Optional, List, Tuple, Any, Union
 
 import deprecated
 import torch
 from torch.nn import Module
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
+
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from transformers import AdamW, get_linear_schedule_with_warmup
@@ -16,14 +20,10 @@ from transformers import AdamW, get_linear_schedule_with_warmup
 import wandb
 
 from tqdm import tqdm
-
 from tools.dumps import get_filename_path
+from .device import get_available_device
 
-from .device import DEVICE
-
-def login():
-    wandb.login() # this causes stdin read for the first time only
-    wandb.init(project="EntitiesAsExperts")
+DEVICE = get_available_device()
 
 MAX_GRAD_NORM = 1.0
 
@@ -46,14 +46,16 @@ class MetricWrapper:
         self.reset()
         self.dataloader_length = len(dataloader)
 
-    def add_batch(self, _inputs, _outputs, loss: float):
+    def add_batch(self, _inputs, _outputs: List, loss: float):
         """Add a batch
 
         :param _inputs
-        :param _outputs
+        :param _outputs: a list of outputs from the model.
+               The training loop is type-agnostic, but is known to return a list of return values
+               (or just a singleton). 
         :param loss the loss of the model
         """
-        self.loss += float(loss)
+        self.loss += loss
     
     def compute(self, epoch: int) -> float:
         """
@@ -70,117 +72,194 @@ class MetricWrapper:
         self.loss = 0.0
 
 
-def train_log(
-    loss: float,
-    example_ct: int,
-    epoch: int,
-    verbose=False
-):
-    loss = float(loss)
+class ModelTrainer(ABC):
+    """
+    A wrapper on trainers that performs logging, example collection and other goodies.
+    
+    Default methods are implemented, but callers should override according to the needs.
 
-    wandb.log({"train_loss": loss, "epoch": epoch}, step=example_ct)
-    if verbose:
-        print(f"Loss after " + str(example_ct).zfill(5) +
-              f" examples: {loss:.3f}")
+    At least, the caller must define load_from_dataloader.
 
-# pylint: disable(too-many-arguments)
+    Yes. This is a clone of Pytorch's Lighting. I am so ashamed of this code.
+    """
+
+    def __init__(
+        self,
+        model: Module,
+        enable_wandb=True,
+        watch_wandb=True):
+        """
+        :param model a module to track.
+               The module must have a forward that returns a pair (loss, something).
+        :param optimizer the model optimizer.
+        :param scheduler the module scheduler
+        :param enable_wandb whether to enable wandb logging and example reporting
+        :param watch_wandb whether to track the model with wandb.
+        """
+        self.enable_wandb = enable_wandb
+        self.model = model
+        self.model.train()
+
+        if watch_wandb:
+            wandb.watch(model)
+    
+    @property
+    def training(self) -> bool:
+        """
+        Wrapper over model.training()
+        """
+        return self.training()
+
+    @training.property
+    def training(self, new_value: bool):
+        """
+        Wrapper over model.train()
+        """
+        self.model.train(new_value)
+
+    @staticmethod
+    @abstractmethod
+    def load_from_dataloader(batch) -> Union[List[torch.tensor], Tuple[List[torch.tensor], Any]]:
+        """
+        :param batch a batch loaded from a given data loader
+
+        If training this method should return a list of tensors for training.
+        Otherwise, this should return a pair of such tensors and other useful metric data.
+        """
+        pass
+
+    def step(self, batch, metric: MetricWrapper) -> Optional[torch.tensor]:
+        """
+        :param metric if evaluating, metric.add_batch() will be called. Otherwise it will be ignored
+        """
+        if self.training:
+            model_input = self.load_from_dataloader(batch)
+            inputs = [elem.to(DEVICE) for elem in model_input]
+            loss, _ = self.model(*inputs)
+
+            return loss
+        else:
+            model_input, metric_input = self.load_from_dataloader(batch)
+            inputs = [elem.to(DEVICE) for elem in model_input]
+            loss, outputs = self.model(*inputs)
+            loss = float(loss)
+            metric.add_batch(model_input + metric_input, outputs, loss)
+        
+
+    def train_log(self, loss: float, example_ct: int, epoch: int, verbose = False):
+        """
+        Log train step. For the evaluation we rely on MetricWrapper
+        """
+        log_payload = {"train_loss": loss, "epoch": epoch}
+
+        if DEVICE == "cuda":
+            log_payload["gpu_mem_allocated"] = torch.cuda.memory_allocated() 
+        
+        if self.enable_wandb:
+            wandb.log(log_payload, step=example_ct)
+
+    def zero_grad(self):
+        self.model.zero_grad()
 
 
 def train_model(
-        model: Module,
+        model_trainer: ModelTrainer,
         train_dataloader: DataLoader,
-        validation_dataloader: DataLoader,
-        load_from_dataloader: Callable,
+        validation_dataloader: Optional[DataLoader],
+        testing_dataloader: Optional[DataLoader],
         optimizer: Optimizer,
         scheduler: LambdaLR,
         epochs: int,
+        validation_frequency: int = 100,
         metric: Optional[MetricWrapper] = None,
         gradient_accumulation_factor: int = 4,
-        automatic_mixed_precision: bool = False):
+        seed = 123456
+    ):
     """
     Train a model.
 
-    :param model a Model whose forward returns a tuple with AT LEAST 2 elements.
+    :param model_trainer an instance of ModelTrainer.
     :param train_dataloader a dataloader
-    :param validation_dataloader a dataloader for validation
-    :param load_from_dataloader a callable that returns a pair (model_params, metric_params).
-        The idea is that model_params is entirely made of pytorch tensors that can be moved to
-        the gpu, while metric_params contains the parameters for the metric.
-
-    :param optimizer
-    :param scheduler
+    :param validation_dataloader a dataloader for validation. This gets called after every `validation_frequency` steps.
+           If None no validation step is performed
+    :param testing_dataloader a dataloader for testing.
     :param epochs
-    :param metric if provided, a callable that invokes a metric (typically a Dataset.Metric).
-           It will be called with params (model_params + metric_params, outputs) where outputs
-           are the outputs of the model. If a metric is not provided a default one will be provided.
+    :param validation_frequency how often to perform validation.
     :param gradient_accumulation_factor if provided, accumulate the gradient for the given number
            of steps. This can be useful in order to avoid OOM issues with CUDA.
+    :param seed if provided, set up the seed.
     """
-
 
     if metric is None:
         metric = MetricWrapper(validation_dataloader)
 
-    for epoch in range(epochs):
-        model.train()
+    train_example_ct = 0
 
-        example_ct = 0
+    if DEVICE == "cuda":
+        torch.cuda.manual_seed(seed)
+    
+
+
+    for epoch in range(epochs):
+        model_trainer.training = True
+        model_trainer.zero_grad()
 
         pending_updates = False
 
         for batch_idx, batch in enumerate(tqdm(train_dataloader)):
-            model_input, _ = load_from_dataloader(batch)
-            inputs = [elem.to(DEVICE) for elem in model_input]
+            if (batch_idx + 1) % validation_frequency != 0:
+                loss = model_trainer.model_step(batch, metric) / gradient_accumulation_factor
 
-            loss, *_ = model(*inputs)
-            loss.backward()
-            pending_updates = True
+                loss.backward()
 
-            clip_grad_norm_(parameters=model.parameters(),
-                            max_norm=MAX_GRAD_NORM)
+                loss = loss.detach().cpu()
+                loss = float(loss)
 
-            if (batch_idx + 1) % gradient_accumulation_factor == 0:
-                optimizer.step()
-                scheduler.step()
-                model.zero_grad()
-                pending_updates = False
+                pending_updates = True
 
-            example_ct += len(model_input)
+                clip_grad_norm_(parameters=model.parameters(),
+                                max_norm=MAX_GRAD_NORM)
 
-            if (batch_idx + 1) % 25 == 0:
-                train_log(loss, example_ct, epoch)
-                
-                
+                if (batch_idx + 1) % gradient_accumulation_factor == 0:
+                    optimizer.step()
+                    scheduler.step()
+                    model_trainer.zero_grad()
+                    pending_updates = False
+
+                train_example_ct += len(batch[0])
+
+                if (batch_idx + 1) % 25 == 0:
+                    model_trainer.train_log(loss, example_ct, epoch)
+            else:
+                model_trainer.training = False
+                model_trainer.zero_grad()
+                metric.reset()
+
+                with torch.no_grad():
+                    for validation_batch in tqdm(validation_dataloader):
+                        model_trainer.step(validation_batch, metric)
+
+                metric.compute(epoch)
+
+                model_trainer.training = True
+
         if pending_updates:
+            model_trainer.training = True
             optimizer.step()
             scheduler.step()
-            model.zero_grad()
+            model_trainer.zero_grad()
             pending_updates = False
+    
+    model_trainer.training = False
+        
 
-        model.eval()
-
-        metric.reset()
-        model.zero_grad()
-
-        with torch.no_grad():
-            for batch in tqdm(validation_dataloader):
-                model_inputs, metric_inputs = load_from_dataloader(batch)
-                inputs = [elem.to(DEVICE) for elem in model_inputs]
-
-                loss, *outputs = model(*inputs)
-
-                metric.add_batch(model_inputs + metric_inputs, outputs, loss)
-
-        metric.compute(epoch)
-
-
-
-def get_optimizer(model: Module, full_finetuning=False):
+def get_optimizer(model: Module, learning_rate: float, full_finetuning=False):
     """
-    Get an optimizer
+    Initialize an AdamW optimizer.
 
     :param model a PyTorch model
     :param full_finetuning if True perform full finetuning
+    :param learning_rate the learning rate for AdamW
     """
     param_optimizer = list(model.named_parameters())
 
@@ -198,7 +277,7 @@ def get_optimizer(model: Module, full_finetuning=False):
 
     return AdamW(
         optimizer_grouped_parameters,
-        lr=1e-4,
+        lr=learning_rate,
         eps=1e-8
     )
 
@@ -215,30 +294,22 @@ def get_schedule(epochs, optimizer, train_dataloader):
         num_training_steps=total_steps
     )
 
-@deprecated.deprecated("TODO: Migrate to W&B")
-def save_models(**kwargs):
+def save_models(format='h5', **kwargs):
     """
     Save the models
 
     >>> save_models(common_model=common_model, bioclassifier= bioclassifier)
 
     All the kwarg parameters must be `Module`s.
+    If the models have a config attribute then it will be saved as well.
     """
 
     for key, value in kwargs.items():
-        path = get_filename_path(f"eae/{key}.pt")
-        torch.save(value.state_dict(), path)
+        model_path = os.path.join(f"{wandb.run.dir}/{key}.{format}")
+        torch.save(value.state_dict(), model_path)
 
-@deprecated.deprecated("TODO: Migrate to W&B")
-def load_model(model: type, saved_model_name: str, *args, **kwargs):
-    """
-    Load a given model.
-
-    :param model a class that inherits from Pytorch's Module
-    :param path_name the saved name of the model
-    """
-    model = model(*args, **kwargs)
-    model.load_state_dict(torch.load(
-        get_filename_path(f"eae/{saved_model_name}.pt")))
-
-    return model
+        config = getattr(value, "config", None)
+        if config:
+            config_path = os.path.join(f"{wandb.run.dir}/{key}.json")
+            with open(config_path, "w") as f:
+                json.dump(config, f)

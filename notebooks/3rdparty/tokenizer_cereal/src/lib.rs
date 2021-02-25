@@ -15,7 +15,7 @@ extern crate crossbeam;
 
 extern crate log;
 
-extern crate blockingqueue;
+extern crate memmap;
 
 use simple_error::SimpleError;
 
@@ -40,6 +40,8 @@ use itertools::Itertools;
 use paste::paste;
 
 use indicatif::ProgressBar;
+
+use memmap::{Mmap};
 
 #[derive(FromPyObject)]
 struct PageFormat {
@@ -78,9 +80,7 @@ macro_rules! cast_errors {
             fn $func( $param1 : $t1, $($param : $t,)* ) -> PyResult<$resType> {
                 match [<$func _helper>] ($param1 $(, $param)*) {
                     Ok(result) => Ok(result),
-                    //Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
-
-                    Err(e) => panic!("Happened error {} at line {} ", e.to_string(), line!())
+                    Err(e) => Err(exceptions::PyTypeError::new_err(format!("{} at line {}", e.to_string(), line!())))
                 }
             }
         }
@@ -104,6 +104,8 @@ macro_rules! cast_errors {
 #[pyclass]
 struct TokenizerCereal {
     slice_file : std::fs::File,
+
+    slice_file_mmap: Mmap,
 
     #[pyo3(get)]
     slice_offsets: Vec<usize>,
@@ -138,8 +140,14 @@ impl TokenizerCereal {
         
         let slice_file = File::open(slice_path).unwrap();
 
+        let mmap = unsafe {
+            memmap::MmapOptions::new()
+                                .map(&slice_file).unwrap()
+        };
+
         TokenizerCereal {
             slice_file: slice_file,
+            slice_file_mmap: mmap,
             slice_offsets: slice_offsets,
             article_lengths: article_lenghts
         }
@@ -155,7 +163,7 @@ impl TokenizerCereal {
     /// :returns a pair of vectors: text tokens and link link target output.
     fn get_slice(&mut self, idx: usize, block_idx: usize, content_block_size: usize)
                  -> PyResult<(Vec<u32>, Vec<u32>)> {
-        get_token_slice(&mut self.slice_file, &self.slice_offsets, idx, block_idx, content_block_size)
+        get_token_slice(&mut self.slice_file_mmap, &self.slice_offsets, idx, block_idx, content_block_size)
     }
 
     /// Get the next slice batch from a tokenized slice file.
@@ -285,7 +293,7 @@ cast_errors!(tokenize_from_iterator(py: Python, generator: &PyAny, output_path: 
 cast_errors!(PYFUNC get_default_tokenizer(slice_path: &str) -> TokenizerCereal);
 
 
-cast_errors!(get_token_slice(input_file: &mut File, // required mutability for seeks
+cast_errors!(get_token_slice(input_file: &Mmap, // required mutability for seeks
     slice_offsets: &Vec<usize>,
     idx: usize,
     block_idx: usize,
@@ -396,8 +404,15 @@ fn get_default_tokenizer_helper(slice_path: &str) -> anyhow::Result<TokenizerCer
 
     let slice_file = File::open(slice_path).unwrap();
 
+    let mmap = unsafe {
+        memmap::MmapOptions::new()
+                            .map(&slice_file).unwrap()
+    };
+
+
     Ok(TokenizerCereal {
         slice_file: slice_file,
+        slice_file_mmap: mmap,
         slice_offsets: slice_offsets,
         article_lengths: article_lenghts
     })
@@ -444,17 +459,25 @@ fn write_slices<T: Write + Seek>(
 }
 
 fn get_token_slice_helper(
-    input_file: &mut File, // required mutability for seeks
+    // input_file: &mut File, // required mutability for seeks
+    input_file: &Mmap,
     slice_offsets: &Vec<usize>,
     idx: usize,
     block_idx: usize,
     context_block_size: usize,
 ) -> anyhow::Result<(Vec<u32>, Vec<u32>)> {
+
+
+    /*
     input_file.seek(SeekFrom::Start(slice_offsets[idx] as u64))?;
 
     let mut buf: Vec<u8> = vec![0_u8; (slice_offsets[idx+1] - slice_offsets[idx]) as usize];
+
     input_file.read_exact(&mut buf)?;
     let page_format : PageFormatOutput = bincode::deserialize(&buf)?;
+    */
+
+    let page_format : PageFormatOutput = bincode::deserialize(&input_file[slice_offsets[idx]..slice_offsets[idx+1]])?;
 
     let start_idx = context_block_size * block_idx;
     let end_idx = min(start_idx + context_block_size, page_format.tokens.len());

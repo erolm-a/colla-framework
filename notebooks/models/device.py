@@ -1,12 +1,11 @@
 """
-Provide top-level device configurations.
+A small util to get the right training device.
 """
 import torch
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+import wandb
 
-def global_move_to_cpu():
-    """
-    Move to CPU
-    """
-    global DEVICE
-    DEVICE = "cpu"
+def get_available_device():
+    device = wandb.config.device
+    if device == "cuda":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return device
