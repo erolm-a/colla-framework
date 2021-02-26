@@ -97,7 +97,7 @@ class ModelTrainer(ABC):
         :param watch_wandb whether to track the model with wandb.
         """
         self.enable_wandb = enable_wandb
-        self.model = model
+        self.model = model.to(DEVICE)
         self.model.train()
 
         if watch_wandb:
@@ -110,7 +110,7 @@ class ModelTrainer(ABC):
         """
         return self.training()
 
-    @training.property
+    @training.setter
     def training(self, new_value: bool):
         """
         Wrapper over model.train()
@@ -198,8 +198,6 @@ def train_model(
     if DEVICE == "cuda":
         torch.cuda.manual_seed(seed)
     
-
-
     for epoch in range(epochs):
         model_trainer.training = True
         model_trainer.zero_grad()
@@ -217,7 +215,7 @@ def train_model(
 
                 pending_updates = True
 
-                clip_grad_norm_(parameters=model.parameters(),
+                clip_grad_norm_(parameters=model_trainer.parameters(),
                                 max_norm=MAX_GRAD_NORM)
 
                 if (batch_idx + 1) % gradient_accumulation_factor == 0:
@@ -229,7 +227,7 @@ def train_model(
                 train_example_ct += len(batch[0])
 
                 if (batch_idx + 1) % 25 == 0:
-                    model_trainer.train_log(loss, example_ct, epoch)
+                    model_trainer.train_log(loss, train_example_ct, epoch)
             else:
                 model_trainer.training = False
                 model_trainer.zero_grad()
@@ -258,8 +256,8 @@ def get_optimizer(model: Module, learning_rate: float, full_finetuning=False):
     Initialize an AdamW optimizer.
 
     :param model a PyTorch model
-    :param full_finetuning if True perform full finetuning
     :param learning_rate the learning rate for AdamW
+    :param full_finetuning if True explore weight decay
     """
     param_optimizer = list(model.named_parameters())
 
@@ -282,7 +280,7 @@ def get_optimizer(model: Module, learning_rate: float, full_finetuning=False):
     )
 
 
-def get_schedule(epochs, optimizer, train_dataloader):
+def get_schedule(epochs: int, optimizer: Optimizer, train_dataloader: DataLoader):
     """
     Get a schedule
     """

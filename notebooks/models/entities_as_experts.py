@@ -8,10 +8,10 @@ import os
 from typing import Optional, Tuple, Union
 
 import torch
-from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLoss, ModuleList, 
-                     Parameter
+from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLoss, ModuleList, \
+                     Parameter, GELU
 import torch.nn.functional as F
-from transformers import BertForMaskedLM, BertConfig
+from transformers import BertModel, BertConfig
 import wandb
 
 from .device import get_available_device
@@ -37,8 +37,6 @@ class TruncatedEncoder(Module):
         return self.encoder(*args, **kwargs)
 
 # TODO: should we replace this part?
-
-
 class TruncatedModel(Module):
     def __init__(self, model, l0: int):
         super().__init__()
@@ -260,15 +258,16 @@ class EaELinearWithLayerNorm(Module):
     This is an intermediate step that can be used shortly after EaEPredictionHead
     """
     def __init__(self, config: BertConfig):
+        super().__init__()
         self.classifier_head = ModuleList([
-            self.Linear(config.hidden_size, config.hidden_size),
-            config.hidden_act,
+            Linear(config.hidden_size, config.hidden_size),
+            GELU(),
             LayerNorm(config.hidden_size, eps=config.layer_norm_eps)])
     
     def forward(self, hidden_states: torch.tensor):
         return self.classifier_head(hidden_states)
 
-class EaEPredictionHead(nn.Module):
+class EaEPredictionHead(Module):
     """
     A reimplementation of :class `BertLMPredictionHead` that is generalizable
     """
@@ -280,7 +279,7 @@ class EaEPredictionHead(nn.Module):
         # an output-only bias for each token.
         self.decoder = Linear(config.hidden_size, output_size, bias=False)
 
-        self.bias = nn.Parameter(torch.zeros(output_size))
+        self.bias = Parameter(torch.zeros(output_size))
 
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
         self.decoder.bias = self.bias
@@ -332,7 +331,7 @@ class EntityPred(TokenPredHead):
     """
     def __init__(self, config: BertConfig, entity_vocab_size: int):
         # TODO: create a new EaEConfig struct
-        super().__init(self, config, vocab_size)
+        super().__init__(config, entity_vocab_size)
 
 
 class TokenPred(TokenPredHead):
@@ -352,13 +351,13 @@ class EntitiesAsExperts(Module):
 
     def __init__(
             self,
-            bert_masked_language_model: BertForMaskedLM,
+            bert_model: BertModel,
             l0: int,
             l1: int,
             entity_size: int,
             entity_embedding_size=256):
         """
-        :param bert_masked_language_model: a pretrained bert instance that can perform Masked LM.
+        :param bert_model: a pretrained bert instance that can perform Masked LM.
                 Required for TokenPred
         :param l0 the number of layers to hook the Entity Memory to
         :param l1 the remaining number of layers to use for TokenPred
@@ -367,10 +366,10 @@ class EntitiesAsExperts(Module):
         """
         super().__init__()
 
-        self.first_block = TruncatedModel(bert_masked_language_model.bert, l0)
+        self.first_block = TruncatedModel(bert_model, l0)
         self.second_block = TruncatedModelSecond(
-            bert_masked_language_model.bert, l1)
-        self._config = bert_masked_language_model.config
+            bert_model, l1)
+        self._config = bert_model.config
         self.entity_memory = EntityMemory(self._config.hidden_size, entity_size,
                                           entity_embedding_size)
         self.bioclassifier = BioClassifier(self._config)
