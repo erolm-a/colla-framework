@@ -5,7 +5,7 @@ An implementation of Entities As Experts.
 from copy import deepcopy
 import json
 import os
-from typing import Optional, Tuple, Union
+from typing import cast, Any, Optional, Tuple, Union
 
 import torch
 from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLoss, ModuleList, \
@@ -73,9 +73,9 @@ class BioClassifier(Module):
 
     def forward(
             self,
-            last_hidden_state: torch.tensor,
-            attention_mask: torch.tensor,
-            labels: Optional[torch.tensor] = None):
+            last_hidden_state: torch.Tensor,
+            attention_mask: torch.Tensor,
+            labels: Optional[torch.Tensor] = None):
         """
         :param last_hidden_state the state returned by BERT.
         """
@@ -155,10 +155,10 @@ class EntityMemory(Module):
     def forward(
         self,
         X,
-        bio_output: Optional[torch.LongTensor],
-        entities_output: Optional[torch.LongTensor],
+        bio_output: Optional[torch.Tensor],
+        entities_output: Optional[torch.Tensor],
         k=100
-    ) -> (torch.tensor, torch.tensor):
+    ) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
         """
         :param x the (raw) output of the first transformer block. It has a shape:
                 B x N x (embed_size).
@@ -172,7 +172,7 @@ class EntityMemory(Module):
                   None loss will be None as well.
         """
 
-        assert not self.training() or (bio_output and entities_output), \
+        assert not self.training or (bio_output and entities_output), \
             "Cannot perform training without bio_output and entites_output"
 
         y = torch.zeros_like(X).to(DEVICE)
@@ -182,15 +182,13 @@ class EntityMemory(Module):
         with torch.no_grad():
 
             calculate_loss = bio_output is not None and entities_output is not None
+            loss = None
             if calculate_loss:
                 loss = torch.zeros((1,)).to(DEVICE)
-            else:
-                loss = None
 
             begin_positions = torch.nonzero(bio_output == self.begin)
 
             # if no mentions are detected skip the entity memory.
-            # TODO: would be nice to assess how often this happens.
             if len(begin_positions) == 0:
                 return loss, y
 
@@ -210,7 +208,7 @@ class EntityMemory(Module):
         pseudo_entity_embedding = self.W_f(mention_span) # num_of_mentions x d_ent
 
         # During training consider the whole entity dictionary
-        if self.training() and bio_output and entities_output:
+        if self.training and bio_output and entities_output:
             alpha = F.softmax(
                 pseudo_entity_embedding.matmul(self.E.weight), dim=1)
 
@@ -238,18 +236,7 @@ class EntityMemory(Module):
         if calculate_loss:
             alpha = torch.log(alpha)
             loss = self.loss(alpha, entities_output[positions[0], positions[1]])
-        else:
-            loss = None
         
-        """
-        del pseudo_entity_embedding
-        del picked_entity
-
-        del first
-        del second
-        del alpha
-        """
-
         return loss, y
 
 class EaELinearWithLayerNorm(Module):
@@ -264,7 +251,7 @@ class EaELinearWithLayerNorm(Module):
             GELU(),
             LayerNorm(config.hidden_size, eps=config.layer_norm_eps)])
     
-    def forward(self, hidden_states: torch.tensor):
+    def forward(self, hidden_states: torch.Tensor):
         return self.classifier_head(hidden_states)
 
 class EaEPredictionHead(Module):
@@ -284,7 +271,7 @@ class EaEPredictionHead(Module):
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
         self.decoder.bias = self.bias
 
-    def forward(self, hidden_states: torch.tensor):
+    def forward(self, hidden_states: torch.Tensor):
         hidden_states = self.transform(hidden_states)
         hidden_states = self.decoder(hidden_states)
         return hidden_states
@@ -306,9 +293,9 @@ class TokenPredHead(Module):
     
     def forward(
         self,
-        sequence_output: torch.tensor,
-        labels: Optional[torch.tensor]
-    ):
+        sequence_output: torch.Tensor,
+        labels: Optional[torch.Tensor]
+    ) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
         """
         :param sequence_output the output of the attention block
         :param labels the wished labels. The domain size must be output_head_number
@@ -375,19 +362,19 @@ class EntitiesAsExperts(Module):
         self.bioclassifier = BioClassifier(self._config)
         self.tokenpred = TokenPred(self._config)
         self.entitypred = EntityPred(self._config, entity_size)
-        self.layernorm = LayerNorm((768,))
+        self.layernorm = LayerNorm(768)
 
         self.loss_fct = CrossEntropyLoss()
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
-        output_ids: Optional[torch.LongTensor] = None,
-        entity_outputs: Optional[torch.LongTensor] = None,
-        _actual_entity_outputs: Optional[torch.LongTensor] = None, # not clear if we need to perform Entity Prediction and supervise with that.
-        mention_boundaries: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.FloatTensor] = None,
-        token_type_ids: Optional[torch.LongTensor] = None,
+        input_ids: torch.Tensor,
+        output_ids: Optional[torch.Tensor] =None,
+        entity_inputs: Optional[torch.Tensor] = None,
+        entity_outputs: Optional[torch.Tensor] = None, # not clear if we need to perform Entity Prediction and supervise with that        
+        mention_boundaries: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
         return_scores: bool = True
         
     ):
@@ -403,7 +390,7 @@ class EntitiesAsExperts(Module):
         :returns a triplet loss, logits (for token_pred) and output of the last transformer block
         """
 
-        compute_loss = mention_boundaries is not None and entity_outputs is not None
+        compute_loss = mention_boundaries is not None and entity_inputs is not None
 
         first_block_outputs = self.first_block(input_ids,
                                                token_type_ids=token_type_ids,
@@ -418,14 +405,14 @@ class EntitiesAsExperts(Module):
             bio_choices = torch.argmax(bio_outputs, 2)
             mention_boundaries = bio_choices
         
-        entity_loss, entity_outputs = self.entity_memory(
-            X, mention_boundaries, entity_outputs)
+        entity_loss, entity_inputs = self.entity_memory(
+            X, mention_boundaries, entity_inputs)
 
-        X = self.second_block(self.layernorm(entity_outputs + X),
+        X = self.second_block(self.layernorm(entity_inputs + X),
                               encoder_attention_mask=attention_mask)
 
-        token_pred_loss, token_prediction_scores = self.tokenpred(X.last_hidden_state)
-        entity_pred_loss, entity_prediction_scores = self.entitypred(X.last_hidden_state)
+        token_pred_loss, token_prediction_scores = self.tokenpred(X.last_hidden_state, output_ids)
+        entity_pred_loss, entity_prediction_scores = self.entitypred(X.last_hidden_state, entity_outputs)
 
         loss = None
 
@@ -450,20 +437,22 @@ class EntitiesAsExperts(Module):
         
         model_json = wandb.restore(model_config_path, run_id)
 
-        config = json.load(model_json)
-        config = deepcopy(config) 
+        assert model_json is not None, "Could not find the required run"
+        config_dict = json.load(model_json) 
+        config_dict = deepcopy(config)
 
         language_model_variant = "language_model_pretrained_variant"
 
-        bert_model = BertForMaskedLM.from_pretrained(config[language_model_variant])
+        bert_model = BertModel.from_pretrained(config_dict[language_model_variant])
 
-        del config[language_model_variant]
+        del config_dict[language_model_variant]
         
-        checkpoint = wandb.restore(checkpoint_path, run_id)
+        checkpoint = wandb.restore(checkpoint_path, run_id) # type: Any
 
-        model = EntitiesAsExperts(bert_model, **config)
+        model = EntitiesAsExperts(bert_model, **config_dict)
 
-        model.load_state_dict(torch.load(checkpoint.buffer.raw, map_location=torch.device('cpu')))
+        model.load_state_dict(torch.load(checkpoint.buffer.raw,
+                              map_location=torch.device('cpu')))
 
         return model
     
@@ -501,13 +490,13 @@ class EaEForQuestionAnswering(Module):
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor,
-        token_type_ids: torch.LongTensor,
-        start_positions: Optional[torch.LongTensor],
-        end_positions: Optional[torch.LongTensor],
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        token_type_ids: torch.Tensor,
+        start_positions: Optional[torch.Tensor],
+        end_positions: Optional[torch.Tensor],
         *args, **kwargs
-    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+    ) -> Tuple[Optional[torch.Tensor], torch.Tensor, torch.Tensor]:
         """
         :param input_ids the input ids
         :param attention_mask

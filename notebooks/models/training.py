@@ -5,7 +5,7 @@ A set of training helpers
 from abc import ABC, abstractmethod
 import json
 import os
-from typing import Callable, Optional, List, Tuple, Any, Union
+from typing import cast, Callable, Optional, List, Tuple, Any, Union
 
 import deprecated
 import torch
@@ -65,6 +65,8 @@ class MetricWrapper:
         avg_loss = self.loss / self.dataloader_length
         wandb.log({'val_loss': avg_loss, "epoch": epoch})
 
+        return avg_loss
+
     def reset(self):
         """
         Reset the internal metric counter.
@@ -106,9 +108,9 @@ class ModelTrainer(ABC):
     @property
     def training(self) -> bool:
         """
-        Wrapper over model.training()
+        Wrapper over model.training
         """
-        return self.training()
+        return self.training
 
     @training.setter
     def training(self, new_value: bool):
@@ -119,7 +121,7 @@ class ModelTrainer(ABC):
 
     @staticmethod
     @abstractmethod
-    def load_from_dataloader(batch) -> Union[List[torch.tensor], Tuple[List[torch.tensor], Any]]:
+    def load_from_dataloader(batch) -> Tuple[List[torch.Tensor], Any]:
         """
         :param batch a batch loaded from a given data loader
 
@@ -128,7 +130,7 @@ class ModelTrainer(ABC):
         """
         pass
 
-    def step(self, batch, metric: MetricWrapper) -> Optional[torch.tensor]:
+    def step(self, batch, metric: MetricWrapper) -> Optional[torch.Tensor]:
         """
         :param metric if evaluating, metric.add_batch() will be called. Otherwise it will be ignored
         """
@@ -139,11 +141,14 @@ class ModelTrainer(ABC):
 
             return loss
         else:
-            model_input, metric_input = self.load_from_dataloader(batch)
+            (model_input, metric_input) = self.load_from_dataloader(batch)
             inputs = [elem.to(DEVICE) for elem in model_input]
             loss, outputs = self.model(*inputs)
             loss = float(loss)
             metric.add_batch(model_input + metric_input, outputs, loss)
+        
+            # make mypy happy
+            return None
         
 
     def train_log(self, loss: float, example_ct: int, epoch: int, verbose = False):
@@ -170,8 +175,8 @@ def train_model(
         optimizer: Optimizer,
         scheduler: LambdaLR,
         epochs: int,
+        metric: MetricWrapper,
         validation_frequency: int = 100,
-        metric: Optional[MetricWrapper] = None,
         gradient_accumulation_factor: int = 4,
         seed = 123456
     ):
@@ -190,9 +195,6 @@ def train_model(
     :param seed if provided, set up the seed.
     """
 
-    if metric is None:
-        metric = MetricWrapper(validation_dataloader)
-
     train_example_ct = 0
 
     if DEVICE == "cuda":
@@ -206,16 +208,15 @@ def train_model(
 
         for batch_idx, batch in enumerate(tqdm(train_dataloader)):
             if (batch_idx + 1) % validation_frequency != 0:
-                loss = model_trainer.model_step(batch, metric) / gradient_accumulation_factor
+                loss = cast(torch.Tensor, model_trainer.step(batch, metric)) / gradient_accumulation_factor
 
                 loss.backward()
 
-                loss = loss.detach().cpu()
-                loss = float(loss)
+                loss_float = float(loss.detach().cpu())
 
                 pending_updates = True
 
-                clip_grad_norm_(parameters=model_trainer.parameters(),
+                clip_grad_norm_(parameters=model_trainer.model.parameters(),
                                 max_norm=MAX_GRAD_NORM)
 
                 if (batch_idx + 1) % gradient_accumulation_factor == 0:
@@ -227,7 +228,7 @@ def train_model(
                 train_example_ct += len(batch[0])
 
                 if (batch_idx + 1) % 25 == 0:
-                    model_trainer.train_log(loss, train_example_ct, epoch)
+                    model_trainer.train_log(loss_float, train_example_ct, epoch)
             else:
                 model_trainer.training = False
                 model_trainer.zero_grad()
