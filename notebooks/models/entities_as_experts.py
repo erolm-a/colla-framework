@@ -5,7 +5,7 @@ An implementation of Entities As Experts.
 from copy import deepcopy
 import json
 import os
-from typing import cast, Any, Optional, Tuple, Union
+from typing import cast, Any, Optional, Tuple, Union, NamedTuple
 
 import torch
 from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLoss, ModuleList, \
@@ -155,7 +155,7 @@ class EntityMemory(Module):
     def forward(
         self,
         X,
-        bio_output: Optional[torch.Tensor],
+        bio_output: torch.Tensor,
         entities_output: Optional[torch.Tensor],
         k=100
     ) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
@@ -166,24 +166,21 @@ class EntityMemory(Module):
                 (which is required during a training stage).
         :param entities_output the detected entities. If not provided no loss is returned
                 (which is required during a training stage).
-        
-        
+        :param k
         :returns a pair (loss, transformer_output). If either of entities_output or bio_output is
                   None loss will be None as well.
         """
 
-        assert not self.training or (bio_output and entities_output), \
-            "Cannot perform training without bio_output and entites_output"
+        assert not self.training or entities_output, \
+            "Cannot perform training without entites_output"
 
         y = torch.zeros_like(X).to(DEVICE)
 
         # Disable gradient calculation for BIO outputs, but re-enable them
         # for the span
         with torch.no_grad():
-
-            calculate_loss = bio_output is not None and entities_output is not None
             loss = None
-            if calculate_loss:
+            if entities_output:
                 loss = torch.zeros((1,)).to(DEVICE)
 
             begin_positions = torch.nonzero(bio_output == self.begin)
@@ -208,7 +205,7 @@ class EntityMemory(Module):
         pseudo_entity_embedding = self.W_f(mention_span) # num_of_mentions x d_ent
 
         # During training consider the whole entity dictionary
-        if self.training and bio_output and entities_output:
+        if self.training and entities_output:
             alpha = F.softmax(
                 pseudo_entity_embedding.matmul(self.E.weight), dim=1)
 
@@ -225,7 +222,7 @@ class EntityMemory(Module):
             # mat1 has size (M x d_ent x k), mat2 has size (M x k x 1)
             # the result has size (M x 256 x 1). Squeeze that out and we've got our
             # entities of size (M x 256)
-            picked_entity = torch.bmm(self.E.weight[:, topk.indices].swapaxes(0, 2).swapaxes(1, 2),
+            picked_entity = torch.bmm(self.E.weight[:, topk.indices].transpose(0, 2).transpose(1, 2),
                                       alpha.view((-1, k, 1))).squeeze()
 
         
@@ -233,7 +230,7 @@ class EntityMemory(Module):
 
         # Compared to the original paper we use NLLoss.
         # Gradient-wise this should not change anything
-        if calculate_loss:
+        if entities_output:
             alpha = torch.log(alpha)
             loss = self.loss(alpha, entities_output[positions[0], positions[1]])
         
@@ -329,6 +326,10 @@ class TokenPred(TokenPredHead):
     def __init__(self, config: BertConfig):
         super().__init__(config, config.vocab_size)
 
+class EntitiesAsExpertsOutputs(NamedTuple):
+    hidden_attention: torch.Tensor
+    token_prediction_scores: torch.Tensor
+    entity_prediction_scores: torch.Tensor
 
 class EntitiesAsExperts(Module):
     """
@@ -338,11 +339,12 @@ class EntitiesAsExperts(Module):
 
     def __init__(
             self,
-            bert_model: BertModel,
             l0: int,
             l1: int,
             entity_size: int,
-            entity_embedding_size=256):
+            entity_embedding_size=256,
+            bert_model_variant = "bert-base-uncased"
+            ):
         """
         :param bert_model: a pretrained bert instance that can perform Masked LM.
                 Required for TokenPred
@@ -353,6 +355,9 @@ class EntitiesAsExperts(Module):
         """
         super().__init__()
 
+        self.bert_model_variant = bert_model_variant
+
+        bert_model = BertModel.from_pretrained(bert_model_variant)
         self.first_block = TruncatedModel(bert_model, l0)
         self.second_block = TruncatedModelSecond(
             bert_model, l1)
@@ -397,7 +402,7 @@ class EntitiesAsExperts(Module):
                                                attention_mask=attention_mask,
                                                output_hidden_states=True)
 
-        X = first_block_outputs[0]
+        hidden_attention = first_block_outputs[0]
         bio_loss, bio_outputs = self.bioclassifier(X, attention_mask=attention_mask,
                                          labels=mention_boundaries)
 
@@ -406,21 +411,23 @@ class EntitiesAsExperts(Module):
             mention_boundaries = bio_choices
         
         entity_loss, entity_inputs = self.entity_memory(
-            X, mention_boundaries, entity_inputs)
+            hidden_attention, mention_boundaries, entity_inputs)
 
-        X = self.second_block(self.layernorm(entity_inputs + X),
+        bert_output  = self.second_block(self.layernorm(entity_inputs + hidden_attention),
                               encoder_attention_mask=attention_mask)
 
-        token_pred_loss, token_prediction_scores = self.tokenpred(X.last_hidden_state, output_ids)
-        entity_pred_loss, entity_prediction_scores = self.entitypred(X.last_hidden_state, entity_outputs)
+        token_pred_loss, token_prediction_scores = self.tokenpred(bert_output.last_hidden_state, output_ids)
+        entity_pred_loss, entity_prediction_scores = self.entitypred(bert_output.last_hidden_state, entity_outputs)
 
         loss = None
 
         if compute_loss:
             loss = entity_loss + bio_loss + token_pred_loss + entity_pred_loss
 
-        return (loss, token_prediction_scores, X,
-                    (token_prediction_scores, entity_prediction_scores))
+        return (loss, EntitiesAsExpertsOutputs(
+            bert_output,
+            token_prediction_scores,
+            entity_prediction_scores))
     
     @staticmethod
     def from_pretrained(config: str, run_id: str):
@@ -439,17 +446,9 @@ class EntitiesAsExperts(Module):
 
         assert model_json is not None, "Could not find the required run"
         config_dict = json.load(model_json) 
-        config_dict = deepcopy(config)
-
-        language_model_variant = "language_model_pretrained_variant"
-
-        bert_model = BertModel.from_pretrained(config_dict[language_model_variant])
-
-        del config_dict[language_model_variant]
-        
         checkpoint = wandb.restore(checkpoint_path, run_id) # type: Any
 
-        model = EntitiesAsExperts(bert_model, **config_dict)
+        model = EntitiesAsExperts(**config_dict)
 
         model.load_state_dict(torch.load(checkpoint.buffer.raw,
                               map_location=torch.device('cpu')))
@@ -465,7 +464,7 @@ class EntitiesAsExperts(Module):
         return {
             "l0": 4,
             "l1": 8,
-            "language_model_pretrained_variant": "bert-base-uncased",
+            "bert_model_variant": self.bert_model_variant,
             "entity_size": 30703,
             "entity_embedding_size": 256,
             "hidden_size": self._config.hidden_size
@@ -487,6 +486,10 @@ class EaEForQuestionAnswering(Module):
         self.eae = eae
         self.qa_outputs = Linear(eae.config["hidden_size"], 2)
         self.config = eae.config
+
+        # Freeze the entity memory
+        for param_weight in self.eae.entity_memory.parameters():
+            param_weight.requires_grad = False
 
     def forward(
         self,
@@ -511,7 +514,7 @@ class EaEForQuestionAnswering(Module):
 
         # Copycat from BertForQuestionAnswering.forward()
         # Basically a logit on 2 terms with appropriate clamping
-        _, __, hidden_states = self.eae(
+        _, hidden_states, *__ = self.eae(
             input_ids, attention_mask, token_type_ids=token_type_ids)
         logits = self.qa_outputs(hidden_states.last_hidden_state)
         start_logits, end_logits = logits.split(1, dim=-1)

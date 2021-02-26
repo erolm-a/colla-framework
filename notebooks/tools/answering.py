@@ -1,7 +1,7 @@
 """A bunch of QA functions"""
 
 from enum import Enum
-from typing import List
+from typing import List, Tuple
 from sentence_transformers import SentenceTransformer
 # from scipy.spatial import distance
 import numpy as np
@@ -294,7 +294,9 @@ def find_exact_entities(label: str) -> DefinitionEntity:
     return DefinitionEntity(label, results_marshalling)
 
 
-def find_most_related_entity(definition_entity: DefinitionEntity, descriptions) -> (List[str], np.array):
+def find_most_related_entity(
+    definition_entity: DefinitionEntity,
+    descriptions) -> Tuple(List[str], np.array):
     """
     Find a list of related entities that match the given descriptions.
     This method uses a language model to disambiguate between different results.
