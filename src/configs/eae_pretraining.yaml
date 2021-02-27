@@ -7,7 +7,7 @@ wikipedia_article_nums:
   value: 100000
 batch_size:
   desc: Batch size while pretraining
-  value: 4
+  value: 1
 wikipedia_cutoff_frequency:
   desc: Cutoff frequency for the most common entities. 0.05 = 5% of the mentions on Wikipedia (taking the most common ones)
   value: 0.30
@@ -16,7 +16,7 @@ gradient_accum_size:
   value: 8
 is_dev:
   desc: Whether to train with a small development set or a full set
-  value: False
+  value: True
 full_finetuning:
   desc: Perform full finetuning (slower training)
   value: False

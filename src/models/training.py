@@ -111,7 +111,7 @@ class ModelTrainer(ABC):
         """
         Wrapper over model.training
         """
-        return self.training
+        return self.model.training
 
     @training.setter
     def training(self, new_value: bool):
@@ -185,7 +185,8 @@ def train_model(
 
     :param model_trainer an instance of ModelTrainer.
     :param train_dataloader a dataloader
-    :param validation_dataloader a dataloader for validation. This gets called after every `validation_frequency` steps.
+    :param validation_dataloader a dataloader for validation. This gets called after every
+           `validation_frequency` steps.
            If None no validation step is performed
     :param testing_dataloader a dataloader for testing.
     :param epochs
@@ -197,8 +198,7 @@ def train_model(
 
     train_example_ct = 0
 
-    if DEVICE == "cuda":
-        torch.cuda.manual_seed(seed)
+    torch.manual_seed(seed)
 
     for epoch in range(epochs):
         model_trainer.training = True

@@ -17,7 +17,7 @@ from models.training import train_model, get_optimizer, get_schedule, MetricWrap
 from models.device import get_available_device
 from transformers import BertModel, AutoTokenizer
 
-NUM_WORKERS = 16
+NUM_WORKERS = 0
 
 
 class PretrainingModelTrainer(ModelTrainer):
@@ -47,7 +47,7 @@ class PretrainingMetric(MetricWrapper):
         masked_links_decoded = self.wikipedia_dataset.decode_compressed_entity_ids(masked_links)
         ground_links_decoded = self.wikipedia_dataset.decode_compressed_entity_ids(links)
 
-        mask_token = self.tokenizer.mask_token_id
+        #mask_token = self.tokenizer.mask_token_id
 
         _, token_logits, entity_logits = outputs
 
@@ -71,7 +71,10 @@ NUM_WORKERS = 16
 np.random.seed(42)
 
 def get_dataloaders(wikipedia_cbor):
-    if wandb.config.is_dev:
+
+    batch_size = wandb.config.batch_size
+    is_dev = wandb.config.is_dev
+    if is_dev:
         wiki_dev_size = int(0.1*len(wikipedia_cbor))
     else:
         wiki_dev_size = len(wikipedia_cbor)
@@ -83,13 +86,14 @@ def get_dataloaders(wikipedia_cbor):
     wiki_validation_size = int(0.02 * wiki_dev_size)
     wiki_test_size = wiki_dev_size - wiki_train_size - wiki_validation_size
 
-    wiki_train_indices, wiki_validation_indices, wiki_test_indices = (wiki_dev_indices[:wiki_train_size],
-                                                                    wiki_dev_indices[wiki_train_size:-wiki_test_size],
-                                                                    wiki_dev_indices[-wiki_test_size:])
+    wiki_train_indices, wiki_validation_indices, wiki_test_indices = (
+        wiki_dev_indices[:wiki_train_size],
+        wiki_dev_indices[wiki_train_size:-wiki_test_size],
+        wiki_dev_indices[-wiki_test_size:])
 
 
     def get_dataloader(indices):
-        sampler = SubsetRandomSampler(wiki_train_indices,
+        sampler = SubsetRandomSampler(indices,
                                             generator=torch.Generator().manual_seed(42))
         return DataLoader(wikipedia_cbor, sampler=sampler,
                                     batch_size=wandb.config.batch_size,
@@ -138,6 +142,4 @@ def main():
 
 
 if __name__ == "__main__":
-    print(sys.version)
-    print(os.getcwd())
     main()
