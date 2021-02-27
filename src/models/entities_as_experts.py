@@ -339,8 +339,8 @@ class TokenPred(TokenPredHead):
 
 class EntitiesAsExpertsOutputs(NamedTuple):
     hidden_attention: torch.Tensor
-    token_prediction_scores: torch.Tensor
-    entity_prediction_scores: torch.Tensor
+    token_prediction_scores = torch.randint(3000, (3, 512, 768))
+    entity_prediction_scores = torch.randint(3000, (3, 512, 768))
 
 
 class EntitiesAsExperts(Module):
@@ -377,8 +377,8 @@ class EntitiesAsExperts(Module):
         self.entity_memory = EntityMemory(self._config.hidden_size, entity_size,
                                           entity_embedding_size)
         self.bioclassifier = BioClassifier(self._config)
-        self.tokenpred = TokenPred(self._config)
-        self.entitypred = EntityPred(self._config, entity_size)
+        #self.tokenpred = TokenPred(self._config)
+        #self.entitypred = EntityPred(self._config, entity_size)
         self.layernorm = LayerNorm(768)
 
         self.loss_fct = CrossEntropyLoss()
@@ -415,12 +415,10 @@ class EntitiesAsExperts(Module):
                                                attention_mask=attention_mask,
                                                output_hidden_states=True)
 
-        print("First block computed")
         hidden_attention = first_block_outputs[0]
         bio_loss, bio_outputs = self.bioclassifier(hidden_attention, attention_mask=attention_mask,
                                                    labels=mention_boundaries)
 
-        print("Bio block computed")
         if not compute_loss:
             bio_choices = torch.argmax(bio_outputs, 2)
             mention_boundaries = bio_choices
@@ -428,27 +426,24 @@ class EntitiesAsExperts(Module):
         entity_loss, entity_inputs = self.entity_memory(
             hidden_attention, mention_boundaries, entity_inputs)
 
-        print("Entity block computed computed")
-
         bert_output = self.second_block(self.layernorm(entity_inputs + hidden_attention),
                                         encoder_attention_mask=attention_mask)
 
-        print("bert output computed")
-
-        token_pred_loss, token_prediction_scores = self.tokenpred(
-            bert_output.last_hidden_state, output_ids)
-        entity_pred_loss, entity_prediction_scores = self.entitypred(
-            bert_output.last_hidden_state, entity_outputs)
+        #token_pred_loss, token_prediction_scores = self.tokenpred(
+        #    bert_output.last_hidden_state, output_ids)
+        #entity_pred_loss, entity_prediction_scores = self.entitypred(
+        #    bert_output.last_hidden_state, entity_outputs)
 
         loss = None
 
         if compute_loss:
-            loss = entity_loss + bio_loss + token_pred_loss + entity_pred_loss
+            loss = entity_loss + bio_loss# + token_pred_loss + entity_pred_loss
 
         return (loss, EntitiesAsExpertsOutputs(
             bert_output,
-            token_prediction_scores,
-            entity_prediction_scores))
+            #token_prediction_scores,
+            #entity_prediction_scores)
+            ))
 
     @staticmethod
     def from_pretrained(config: str, run_id: str):

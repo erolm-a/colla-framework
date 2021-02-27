@@ -207,31 +207,32 @@ def train_model(
         pending_updates = False
 
         for batch_idx, batch in enumerate(tqdm(train_dataloader)):
-            if (batch_idx + 1) % validation_frequency != 0:
-                loss = cast(torch.Tensor, model_trainer.step(
-                    batch, metric)) / gradient_accumulation_factor
+            loss = cast(torch.Tensor, model_trainer.step(
+                batch, metric)) / gradient_accumulation_factor
 
-                loss.backward()
+            loss.backward()
 
-                loss_float = float(loss.detach().cpu())
+            loss_float = float(loss)
 
-                pending_updates = True
+            pending_updates = True
 
-                clip_grad_norm_(parameters=model_trainer.model.parameters(),
-                                max_norm=MAX_GRAD_NORM)
+            clip_grad_norm_(parameters=model_trainer.model.parameters(),
+                            max_norm=MAX_GRAD_NORM)
 
-                if (batch_idx + 1) % gradient_accumulation_factor == 0:
-                    optimizer.step()
-                    scheduler.step()
-                    model_trainer.zero_grad()
-                    pending_updates = False
+            if (batch_idx + 1) % gradient_accumulation_factor == 0:
+                optimizer.step()
+                scheduler.step()
+                model_trainer.zero_grad()
+                pending_updates = False
 
-                train_example_ct += len(batch[0])
+            train_example_ct += len(batch[0])
 
-                if (batch_idx + 1) % 25 == 0:
-                    model_trainer.train_log(
-                        loss_float, train_example_ct, epoch)
-            else:
+            if (batch_idx + 1) % 25 == 0:
+                model_trainer.train_log(
+                    loss_float, train_example_ct, epoch)
+
+            # Every `validation_frequency` steps validations must be performed
+            if (batch_idx + 1) % validation_frequency == 0:
                 model_trainer.training = False
                 model_trainer.zero_grad()
                 metric.reset()
