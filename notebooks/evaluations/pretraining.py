@@ -1,3 +1,5 @@
+import os
+import sys
 from typing import Tuple
 
 import datasets
@@ -102,7 +104,7 @@ def get_dataloaders(wikipedia_cbor):
 def main():
     np.random.seed(42)
 
-    wandb.init("EaEPretraining", config="configs/eae_pretraining.yaml")
+    wandb.init(project="EaEPretraining", config="configs/eae_pretraining.yaml")
     print(wandb.config)
 
     wikipedia_cbor = WikipediaCBOR("wikipedia/car-wiki2020-01-01/enwiki2020.cbor", "wikipedia/car-wiki2020-01-01/partitions",
@@ -121,7 +123,7 @@ def main():
     optimizer = get_optimizer(pretraining_model,
                                 learning_rate=float(wandb.config.learning_rate),
                                 full_finetuning=wandb.config.full_finetuning)
-    scheduler = get_schedule(squad_epochs, optimizer, wiki_train_dataloader)
+    scheduler = get_schedule(epochs, optimizer, wiki_train_dataloader)
 
     metric = PretrainingMetric(wiki_validation_dataloader)
     model_trainer = PretrainingModelTrainer(pretraining_model)
@@ -136,4 +138,6 @@ def main():
 
 
 if __name__ == "__main__":
+    print(sys.version)
+    print(os.getcwd())
     main()
