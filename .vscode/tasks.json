@@ -13,7 +13,7 @@
 		{
 			"label": "Launch maturin",
 			"type": "shell",
-			"command": ["source ~/.pyenv/versions/colla/bin/activate; cd ${workspaceFolder}/notebooks/3rdparty/tokenizer_cereal; maturin develop"],
+			"command": ["source ~/.pyenv/versions/colla/bin/activate; cd ${workspaceFolder}/src/3rdparty/tokenizer_cereal; maturin develop"],
 			"problemMatcher": [
 				"$rustc"
 			],
@@ -22,7 +22,7 @@
 		{
 			"label": "Launch maturin (release build)",
 			"type": "shell",
-			"command": ["source ~/.pyenv/versions/colla/bin/activate; cd ${workspaceFolder}/notebooks/3rdparty/tokenizer_cereal; maturin develop --release"],
+			"command": ["source ~/.pyenv/versions/colla/bin/activate; cd ${workspaceFolder}/src/3rdparty/tokenizer_cereal; maturin develop --release"],
 			"problemMatcher": [
 				"$rustc"
 			],

@@ -9,7 +9,7 @@
             "type": "python",
             "request": "launch",
             "program": "launch_tokenizer.py",
-            "cwd": "${workspaceFolder}/notebooks",
+            "cwd": "${workspaceFolder}/src",
             "console": "integratedTerminal",
             "preLaunchTask": "Launch maturin (release build)"
         },
@@ -22,7 +22,7 @@
                 "launch_tokenizer.py"
             ],
             "preLaunchTask": "Launch maturin",
-            "cwd": "${workspaceFolder}/notebooks",
+            "cwd": "${workspaceFolder}/src",
             "env": {
             },
             "sourceLanguages": ["rust, python"]
@@ -43,12 +43,12 @@
                     "kind": "lib"
                 }
             },
-            "relativePathBase": "${workspaceFolder}/notebooks/3rdparty/tokenizer_cereal",
+            "relativePathBase": "${workspaceFolder}/src/3rdparty/tokenizer_cereal",
             // "preLaunchTask": "Launch maturin",
-            "cwd": "${workspaceFolder}/notebooks/3rdparty/tokenizer_cereal",
+            "cwd": "${workspaceFolder}/src/3rdparty/tokenizer_cereal",
             "env": {
                 "RUST_BACKTRACE": "1",
-                "DATA_DIR": "/home/erolm_a/Documenti/Work/knowledge-glue/notebooks/data"
+                "DATA_DIR": "/home/erolm_a/Documenti/Work/knowledge-glue/src/data"
             },
             "sourceLanguages": ["rust", "python"]
         },
