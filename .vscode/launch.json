@@ -5,6 +5,13 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python: Modulo",
+            "type": "python",
+            "request": "launch",
+            "module": "evaluations.pretraining",
+            "cwd": "${workspaceFolder}/notebooks"
+        },
+        {
             "name": "Python: launch_tokenizer.py",
             "type": "python",
             "request": "launch",
@@ -38,7 +45,7 @@
                     "--no-default-features",
                     "--lib"
                 ],
-                 "filter": {
+                "filter": {
                     "name": "tokenizer_cereal",
                     "kind": "lib"
                 }
@@ -50,7 +57,10 @@
                 "RUST_BACKTRACE": "1",
                 "DATA_DIR": "/home/erolm_a/Documenti/Work/knowledge-glue/src/data"
             },
-            "sourceLanguages": ["rust", "python"]
+            "sourceLanguages": [
+                "rust",
+                "python"
+            ]
         },
     ]
 }

@@ -1,0 +1,15 @@
+epochs:
+  desc: Number of epochs while finetuning for TriviaQA
+  value: 5
+batch_size:
+  desc: Batch size while finetuning for TriviaQA
+  value: 8
+gradient_accum_size:
+  desc: Gradient accumulator multiplier for TriviaQA
+  value: 4
+learning_rate:
+  desc: learning rate used when setting up the adam optimizer
+  value: 5.e-6
+full_finetuning:
+  desc: Whether to apply weigth decay on a number of optimizer parameters except for bias, gamma, or beta for SQuAD
+  value: False

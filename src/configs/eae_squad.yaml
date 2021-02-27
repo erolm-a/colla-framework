@@ -1,0 +1,18 @@
+epochs:
+  desc: Number of epochs while finetuning for SQuAD
+  value: 5
+is_dev:
+  desc: Train only on a small development set
+  value: True
+batch_size:
+  desc: Batch size while finetuning for SQuAD
+  value: 8
+gradient_accum_size:
+  desc: Gradient accumulator multiplier for SQuAD
+  value: 4
+learning_rate:
+  desc: Learning rate used when setting up the Adam optimizer while finetuning for SQuAD
+  value: 1.e-4
+full_finetuning:
+  desc: Whether to apply weigth decay on a number of optimizer parameters except for bias, gamma, or beta.
+  value: False

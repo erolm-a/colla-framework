@@ -5,7 +5,7 @@ A set of training helpers
 from abc import ABC, abstractmethod
 import json
 import os
-from typing import Callable, Optional, List, Tuple, Any, Union
+from typing import cast, Callable, Optional, List, Tuple, Any, Union, Sequence
 
 import deprecated
 import torch
@@ -27,6 +27,7 @@ DEVICE = get_available_device()
 
 MAX_GRAD_NORM = 1.0
 
+
 class MetricWrapper:
     """
     A mere wrapper for a HuggingFace's Datasets Metric.
@@ -46,7 +47,7 @@ class MetricWrapper:
         self.reset()
         self.dataloader_length = len(dataloader)
 
-    def add_batch(self, _inputs, _outputs: List, loss: float):
+    def add_batch(self, _inputs, _outputs, loss: float):
         """Add a batch
 
         :param _inputs
@@ -56,7 +57,7 @@ class MetricWrapper:
         :param loss the loss of the model
         """
         self.loss += loss
-    
+
     def compute(self, epoch: int) -> float:
         """
         Compute the metric after the batches have been added.
@@ -64,6 +65,8 @@ class MetricWrapper:
         """
         avg_loss = self.loss / self.dataloader_length
         wandb.log({'val_loss': avg_loss, "epoch": epoch})
+
+        return avg_loss
 
     def reset(self):
         """
@@ -84,10 +87,10 @@ class ModelTrainer(ABC):
     """
 
     def __init__(
-        self,
-        model: Module,
-        enable_wandb=True,
-        watch_wandb=True):
+            self,
+            model: Module,
+            enable_wandb=True,
+            watch_wandb=True):
         """
         :param model a module to track.
                The module must have a forward that returns a pair (loss, something).
@@ -97,20 +100,20 @@ class ModelTrainer(ABC):
         :param watch_wandb whether to track the model with wandb.
         """
         self.enable_wandb = enable_wandb
-        self.model = model
+        self.model = model.to(DEVICE)
         self.model.train()
 
         if watch_wandb:
             wandb.watch(model)
-    
+
     @property
     def training(self) -> bool:
         """
-        Wrapper over model.training()
+        Wrapper over model.training
         """
-        return self.training()
+        return self.training
 
-    @training.property
+    @training.setter
     def training(self, new_value: bool):
         """
         Wrapper over model.train()
@@ -119,7 +122,7 @@ class ModelTrainer(ABC):
 
     @staticmethod
     @abstractmethod
-    def load_from_dataloader(batch) -> Union[List[torch.tensor], Tuple[List[torch.tensor], Any]]:
+    def load_from_dataloader(batch) -> Tuple[List[torch.Tensor], List[Any]]:
         """
         :param batch a batch loaded from a given data loader
 
@@ -128,12 +131,12 @@ class ModelTrainer(ABC):
         """
         pass
 
-    def step(self, batch, metric: MetricWrapper) -> Optional[torch.tensor]:
+    def step(self, batch, metric: MetricWrapper) -> Optional[torch.Tensor]:
         """
         :param metric if evaluating, metric.add_batch() will be called. Otherwise it will be ignored
         """
         if self.training:
-            model_input = self.load_from_dataloader(batch)
+            model_input, _ = self.load_from_dataloader(batch)
             inputs = [elem.to(DEVICE) for elem in model_input]
             loss, _ = self.model(*inputs)
 
@@ -144,17 +147,19 @@ class ModelTrainer(ABC):
             loss, outputs = self.model(*inputs)
             loss = float(loss)
             metric.add_batch(model_input + metric_input, outputs, loss)
-        
 
-    def train_log(self, loss: float, example_ct: int, epoch: int, verbose = False):
+            # make mypy happy
+            return None
+
+    def train_log(self, loss: float, example_ct: int, epoch: int, verbose=False):
         """
         Log train step. For the evaluation we rely on MetricWrapper
         """
         log_payload = {"train_loss": loss, "epoch": epoch}
 
         if DEVICE == "cuda":
-            log_payload["gpu_mem_allocated"] = torch.cuda.memory_allocated() 
-        
+            log_payload["gpu_mem_allocated"] = torch.cuda.memory_allocated()
+
         if self.enable_wandb:
             wandb.log(log_payload, step=example_ct)
 
@@ -163,18 +168,18 @@ class ModelTrainer(ABC):
 
 
 def train_model(
-        model_trainer: ModelTrainer,
-        train_dataloader: DataLoader,
-        validation_dataloader: Optional[DataLoader],
-        testing_dataloader: Optional[DataLoader],
-        optimizer: Optimizer,
-        scheduler: LambdaLR,
-        epochs: int,
-        validation_frequency: int = 100,
-        metric: Optional[MetricWrapper] = None,
-        gradient_accumulation_factor: int = 4,
-        seed = 123456
-    ):
+    model_trainer: ModelTrainer,
+    train_dataloader: DataLoader,
+    validation_dataloader: Optional[DataLoader],
+    testing_dataloader: Optional[DataLoader],
+    optimizer: Optimizer,
+    scheduler: LambdaLR,
+    epochs: int,
+    metric: MetricWrapper,
+    validation_frequency: int = 100,
+    gradient_accumulation_factor: int = 4,
+    seed=123456
+):
     """
     Train a model.
 
@@ -190,15 +195,10 @@ def train_model(
     :param seed if provided, set up the seed.
     """
 
-    if metric is None:
-        metric = MetricWrapper(validation_dataloader)
-
     train_example_ct = 0
 
     if DEVICE == "cuda":
         torch.cuda.manual_seed(seed)
-    
-
 
     for epoch in range(epochs):
         model_trainer.training = True
@@ -208,16 +208,16 @@ def train_model(
 
         for batch_idx, batch in enumerate(tqdm(train_dataloader)):
             if (batch_idx + 1) % validation_frequency != 0:
-                loss = model_trainer.model_step(batch, metric) / gradient_accumulation_factor
+                loss = cast(torch.Tensor, model_trainer.step(
+                    batch, metric)) / gradient_accumulation_factor
 
                 loss.backward()
 
-                loss = loss.detach().cpu()
-                loss = float(loss)
+                loss_float = float(loss.detach().cpu())
 
                 pending_updates = True
 
-                clip_grad_norm_(parameters=model.parameters(),
+                clip_grad_norm_(parameters=model_trainer.model.parameters(),
                                 max_norm=MAX_GRAD_NORM)
 
                 if (batch_idx + 1) % gradient_accumulation_factor == 0:
@@ -229,7 +229,8 @@ def train_model(
                 train_example_ct += len(batch[0])
 
                 if (batch_idx + 1) % 25 == 0:
-                    model_trainer.train_log(loss, example_ct, epoch)
+                    model_trainer.train_log(
+                        loss_float, train_example_ct, epoch)
             else:
                 model_trainer.training = False
                 model_trainer.zero_grad()
@@ -249,17 +250,17 @@ def train_model(
             scheduler.step()
             model_trainer.zero_grad()
             pending_updates = False
-    
+
     model_trainer.training = False
-        
+
 
 def get_optimizer(model: Module, learning_rate: float, full_finetuning=False):
     """
     Initialize an AdamW optimizer.
 
     :param model a PyTorch model
-    :param full_finetuning if True perform full finetuning
     :param learning_rate the learning rate for AdamW
+    :param full_finetuning if True explore weight decay
     """
     param_optimizer = list(model.named_parameters())
 
@@ -282,7 +283,7 @@ def get_optimizer(model: Module, learning_rate: float, full_finetuning=False):
     )
 
 
-def get_schedule(epochs, optimizer, train_dataloader):
+def get_schedule(epochs: int, optimizer: Optimizer, train_dataloader: DataLoader):
     """
     Get a schedule
     """
@@ -293,6 +294,7 @@ def get_schedule(epochs, optimizer, train_dataloader):
         num_warmup_steps=int(0.05*total_steps),
         num_training_steps=total_steps
     )
+
 
 def save_models(format='h5', **kwargs):
     """

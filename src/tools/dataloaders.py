@@ -9,7 +9,7 @@ import itertools
 import math
 import os
 import pickle
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Sequence
 
 from trec_car import read_data
 from trec_car.read_data import (AnnotationsFile, Page, Para,
@@ -136,6 +136,9 @@ class WikipediaCBOR(Dataset):
         self.key_restrictor = dict(
             zip(self.chosen_freqs, range(self.max_entity_num)))
 
+        self.key_decoder = dict([(b, a) for a, b in self.key_restrictor.items()])
+        self.key_titles_vec = self.extract_toc_titles()
+
         # == ITERATION CONTROL ==
         self.last_page = 0
         self.last_block = 0
@@ -150,11 +153,18 @@ class WikipediaCBOR(Dataset):
 
     def __len__(self):
         return self.length
+    
+    def extract_toc_titles(self) -> List[str]:
+        """
+        Extract a list of titles from the ToC.
+        """
+
+        return list(self.key_encoder.keys())
+
 
     def extract_readable_key_titles(self):
         """
-        Build a list of human-readable names of CBOR entries.
-        Compared to self.keys, these keys are not binary encoded formats.
+        Build a set of human-readable names of CBOR entries.
         """
         def extract_from_key(offset):
             cbor_file.seek(offset)
@@ -363,25 +373,27 @@ class WikipediaCBOR(Dataset):
 
         return page_idx, block_offset
 
-
-    def process_tokenizer_output(self, toks: List[int], links: List[int]):
+    def process_tokenizer_output(self, toks: List[int], links: List[int]
+                                 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+                                            torch.Tensor, torch.Tensor, torch.Tensor]:
         links = [self.key_restrictor.get(x, 0) for x in links]
 
         masked_toks, masked_links, masked_bio = self.get_boundaries_masked(
             toks, links)
 
-        toks, links, masked_toks, masked_links, masked_bio = [
+        toks_tensor, links_tensor, masked_toks_tensor, masked_links_tensor, masked_bio_tensor = [
             torch.LongTensor(pad_sequences([x], maxlen=self.token_length,
-                                            dtype="long", value=0.0,
-                                            truncating="post", padding="post")[0])
+                                           dtype="long", value=0.0,
+                                           truncating="post", padding="post")[0])
             .squeeze() for x in (toks, links, masked_toks,
-                                    masked_links, masked_bio)
+                                 masked_links, masked_bio)
         ]
 
         # attend everywhere it is not padded
-        attns = torch.where(toks != 0, 1, 0)
+        attns = torch.where(toks_tensor != 0, 1, 0)
 
-        return (masked_toks, toks, masked_links, links, masked_bio, attns)
+        return (masked_toks_tensor, toks_tensor, masked_links_tensor,
+                links_tensor, masked_bio_tensor, attns)
 
     def _getitem(self):
         """
@@ -440,6 +452,8 @@ class WikipediaCBOR(Dataset):
         
         return self.process_tokenizer_output(toks, links)
 
+    def decode_compressed_entity_ids(self, entity_batches: Sequence[Sequence[int]]) -> List[List[str]]:
+        return [[self.key_titles_vec[self.key_decoder.get(int(idx), 0)] for idx in batch] for batch in entity_batches]
 
 class SQuADDataloader():
     """

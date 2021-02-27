@@ -1,0 +1,34 @@
+# EaE Section
+pretraining_epochs:
+  desc: Number of epochs while pretraining
+  value: 5
+wikipedia_article_nums:
+  desc: Number of wikipedia pages to preprocess (DEBUG)
+  value: 100000
+batch_size:
+  desc: Batch size while pretraining
+  value: 4
+wikipedia_cutoff_frequency:
+  desc: Cutoff frequency for the most common entities. 0.05 = 5% of the mentions on Wikipedia (taking the most common ones)
+  value: 0.30
+gradient_accum_size:
+  desc: Gradient accumulator multiplier
+  value: 8
+is_dev:
+  desc: Whether to train with a small development set or a full set
+  value: False
+full_finetuning:
+  desc: Perform full finetuning (slower training)
+  value: False
+l0:
+  desc: Depth of first transformer block
+  value: 4
+l1:
+  desc: Depth of second transformer block
+  value: 8
+entity_embedding_size:
+  desc: Entity embedding size
+  value: 256
+learning_rate:
+  desc: Learning rate used when setting up the Adam optimizer while finetuning for SQuAD
+  value: 1.e-4
