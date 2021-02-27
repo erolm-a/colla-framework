@@ -1,21 +1,18 @@
-import os
-import sys
-from typing import Tuple
+"""
+Pretraining
+"""
 
-import datasets
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, SubsetRandomSampler
-from transformers import BertModel
-
+from transformers import AutoTokenizer
 import wandb
 
 from tools.dataloaders import WikipediaCBOR
 
 from models import EntitiesAsExperts, EntitiesAsExpertsOutputs
-from models.training import train_model, get_optimizer, get_schedule, MetricWrapper, ModelTrainer, save_models
-from models.device import get_available_device
-from transformers import BertModel, AutoTokenizer
+from models.training import (train_model, get_optimizer, get_schedule,
+                            MetricWrapper, ModelTrainer, save_models)
 
 NUM_WORKERS = 0
 

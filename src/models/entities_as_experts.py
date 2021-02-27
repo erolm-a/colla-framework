@@ -197,8 +197,9 @@ class EntityMemory(Module):
             end_positions = torch.tensor([
                 self._get_last_mention(bio_output, pos) for pos in begin_positions]).unsqueeze(1).to(DEVICE)
 
-        # Create the tensor so that it contains the batch position, the begin_positions and the end positions
-        # Then reshape so that they are row_based:
+
+        # Create the tensor so that it contains the batch position, the begin_positions
+        # and the end positions in separate rows.
         positions = torch.cat([begin_positions, end_positions], 1).T
 
         first = X[positions[0], positions[1]]
@@ -209,36 +210,37 @@ class EntityMemory(Module):
         pseudo_entity_embedding = self.W_f(
             mention_span)  # num_of_mentions x d_ent
 
-        # During training consider the whole entity dictionary
-        if self.training and is_supervised:
+        if is_supervised:
             alpha = F.softmax(
                 pseudo_entity_embedding.matmul(self.E.weight), dim=1)
 
+            alpha_log = torch.log(alpha)
+            # Compared to the original paper we use NLLoss.
+            # Gradient-wise this should not change anything
+            loss = self.loss(
+                alpha_log, entities_output[positions[0], positions[1]])
+            
+        if self.training:
             # shape: B x d_ent
             picked_entity = self.E(alpha)
 
         else:
             # K nearest neighbours
-            topk = torch.topk(self.E.weight.T.matmul(
-                pseudo_entity_embedding.T), k, dim=0)
+            # Note: the paper makes a slight notation abuse.
+            # When computing the query vector, alpha is the softmax of the topk entities
+            # When computing the loss, alpha is the softmax across the whole dictionary
+            topk = torch.topk(pseudo_entity_embedding @ self.E.weight, k, dim=1)
 
-            alpha = F.softmax(topk.values, dim=1)
+            alpha_topk = F.softmax(topk.values, dim=1)
 
             # mat1 has size (M x d_ent x k), mat2 has size (M x k x 1)
-            # the result has size (M x 256 x 1). Squeeze that out and we've got our
-            # entities of size (M x 256)
+            # the result has size (M x d_ent x 1). Squeeze that out and we've got our
+            # entities of size (M x d_ent).
             picked_entity = torch.bmm(
-                self.E.weight[:, topk.indices].transpose(0, 2).transpose(1, 2),
-                alpha.view((-1, k, 1))).squeeze()
+                self.E.weight[:, topk.indices].transpose(0, 1),
+                alpha_topk.view((-1, k, 1))).view((-1, self.d_ent))
 
         y[positions[0], positions[1]] = self.W_b(picked_entity)
-
-        # Compared to the original paper we use NLLoss.
-        # Gradient-wise this should not change anything
-        if is_supervised:
-            alpha = torch.log(alpha)
-            loss = self.loss(
-                alpha, entities_output[positions[0], positions[1]])
 
         return loss, y
 
@@ -339,8 +341,8 @@ class TokenPred(TokenPredHead):
 
 class EntitiesAsExpertsOutputs(NamedTuple):
     hidden_attention: torch.Tensor
-    token_prediction_scores = torch.randint(3000, (3, 512, 768))
-    entity_prediction_scores = torch.randint(3000, (3, 512, 768))
+    token_prediction_scores: torch.Tensor
+    entity_prediction_scores: torch.Tensor
 
 
 class EntitiesAsExperts(Module):
@@ -377,8 +379,8 @@ class EntitiesAsExperts(Module):
         self.entity_memory = EntityMemory(self._config.hidden_size, entity_size,
                                           entity_embedding_size)
         self.bioclassifier = BioClassifier(self._config)
-        #self.tokenpred = TokenPred(self._config)
-        #self.entitypred = EntityPred(self._config, entity_size)
+        self.tokenpred = TokenPred(self._config)
+        self.entitypred = EntityPred(self._config, entity_size)
         self.layernorm = LayerNorm(768)
 
         self.loss_fct = CrossEntropyLoss()
@@ -429,21 +431,21 @@ class EntitiesAsExperts(Module):
         bert_output = self.second_block(self.layernorm(entity_inputs + hidden_attention),
                                         encoder_attention_mask=attention_mask)
 
-        #token_pred_loss, token_prediction_scores = self.tokenpred(
-        #    bert_output.last_hidden_state, output_ids)
-        #entity_pred_loss, entity_prediction_scores = self.entitypred(
-        #    bert_output.last_hidden_state, entity_outputs)
+        token_pred_loss, token_prediction_scores = self.tokenpred(
+            bert_output.last_hidden_state, output_ids)
+        entity_pred_loss, entity_prediction_scores = self.entitypred(
+            bert_output.last_hidden_state, entity_outputs)
 
         loss = None
 
         if compute_loss:
-            loss = entity_loss + bio_loss# + token_pred_loss + entity_pred_loss
+            loss = entity_loss + bio_loss + token_pred_loss# + entity_pred_loss
 
         return (loss, EntitiesAsExpertsOutputs(
             bert_output,
-            #token_prediction_scores,
-            #entity_prediction_scores)
-            ))
+            token_prediction_scores,
+            entity_prediction_scores
+        ))
 
     @staticmethod
     def from_pretrained(config: str, run_id: str):
