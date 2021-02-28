@@ -5,6 +5,12 @@ Base:
 
 Flask: [![](https://images.microbadger.com/badges/version/erolmatei/colla-framework-flask.svg)](https://microbadger.com/images/erolmatei/colla-framework-flask "Get your own version badge on microbadger.com")
 
+# Note: Entities As Experts
+
+The Entities as experts model can be found under `src/models` and the evaluation scripts to run them (although still under severe rewriting) are under `src/evaluations`. More instructions on how to run them coming soon!
+
+---
+
 ## Description
 
 ColLa is a simple research project about linguistic-oriented conversational agents. This project comes with a Knowledge Graph generator and a small PoC chatbot for testing purposes.
