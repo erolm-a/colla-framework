@@ -64,7 +64,7 @@ class MetricWrapper:
         This call may call wandb to perform logging.
         """
         avg_loss = self.loss / self.dataloader_length
-        wandb.log({'val_loss': avg_loss, "epoch": epoch})
+        #wandb.log({'val_loss': avg_loss, "epoch": epoch})
 
         return avg_loss
 
@@ -135,21 +135,18 @@ class ModelTrainer(ABC):
         """
         :param metric if evaluating, metric.add_batch() will be called. Otherwise it will be ignored
         """
+        model_input, metric_input = self.load_from_dataloader(batch)
+        inputs = tuple(elem.to(DEVICE) for elem in model_input)
+        loss, outputs = self.model(*inputs)
+
         if self.training:
-            model_input, _ = self.load_from_dataloader(batch)
-            inputs = [elem.to(DEVICE) for elem in model_input]
-            loss, _ = self.model(*inputs)
-
             return loss
-        else:
-            model_input, metric_input = self.load_from_dataloader(batch)
-            inputs = [elem.to(DEVICE) for elem in model_input]
-            loss, outputs = self.model(*inputs)
-            loss = float(loss)
-            metric.add_batch(model_input + metric_input, outputs, loss)
 
-            # make mypy happy
-            return None
+        loss = float(loss)
+        metric.add_batch(model_input + metric_input, outputs, loss)
+
+        # make mypy happy
+        return None
 
     def train_log(self, loss: float, example_ct: int, epoch: int, verbose=False):
         """
@@ -202,38 +199,39 @@ def train_model(
 
     for epoch in range(epochs):
         model_trainer.training = True
-        model_trainer.zero_grad()
+        optimizer.zero_grad()
 
         pending_updates = False
 
         for batch_idx, batch in enumerate(tqdm(train_dataloader)):
-            if (batch_idx + 1) % validation_frequency != 0:
-                loss = cast(torch.Tensor, model_trainer.step(
-                    batch, metric)) / gradient_accumulation_factor
+            loss = cast(torch.Tensor, model_trainer.step(
+                batch, metric)) / gradient_accumulation_factor
 
-                loss.backward()
+            loss.backward()
 
-                loss_float = float(loss.detach().cpu())
+            loss_float = float(loss)
 
-                pending_updates = True
+            pending_updates = True
 
-                clip_grad_norm_(parameters=model_trainer.model.parameters(),
-                                max_norm=MAX_GRAD_NORM)
+            clip_grad_norm_(parameters=model_trainer.model.parameters(),
+                            max_norm=MAX_GRAD_NORM)
 
-                if (batch_idx + 1) % gradient_accumulation_factor == 0:
-                    optimizer.step()
-                    scheduler.step()
-                    model_trainer.zero_grad()
-                    pending_updates = False
+            if (batch_idx + 1) % gradient_accumulation_factor == 0:
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                pending_updates = False
 
-                train_example_ct += len(batch[0])
+            train_example_ct += len(batch[0])
 
-                if (batch_idx + 1) % 25 == 0:
-                    model_trainer.train_log(
-                        loss_float, train_example_ct, epoch)
-            else:
+            if (batch_idx + 1) % 25 == 0:
+                model_trainer.train_log(
+                    loss_float, train_example_ct, epoch)
+
+            # Every `validation_frequency` steps validations must be performed
+            if (batch_idx + 1) % validation_frequency == 0:
                 model_trainer.training = False
-                model_trainer.zero_grad()
+                optimizer.zero_grad()
                 metric.reset()
 
                 with torch.no_grad():

@@ -5,6 +5,12 @@ Base:
 
 Flask: [![](https://images.microbadger.com/badges/version/erolmatei/colla-framework-flask.svg)](https://microbadger.com/images/erolmatei/colla-framework-flask "Get your own version badge on microbadger.com")
 
+# Note: Entities As Experts
+
+The Entities as experts model can be found under `src/models` and the evaluation scripts to run them (although still under severe rewriting) are under `src/evaluations`. More instructions on how to run them coming soon!
+
+---
+
 ## Description
 
 ColLa is a simple research project about linguistic-oriented conversational agents. This project comes with a Knowledge Graph generator and a small PoC chatbot for testing purposes.
@@ -21,18 +27,18 @@ If you are cloning this repo, be sure to [install git-lfs](https://github.com/gi
 
 We assume that you are going to use this project either for regression tests or for development inside a docker container. Thus, you only need to use the right image (erolmatei/colla-framework-base) which will then invoke `setup_docker.sh`. This will, in turn, install all the required libraries.
 
-When preparing the yaml file for launching one of the given services, you *should* specify a data folder to use. By default `/root/colla-framework/notebooks/data` will be used unless you specify the environment variable `COLLA_DATA_FOLDER` (which you will set in the YAML file for the pod, see below). You should set it to point to a volume claim folder, e.g. `/nfs/colla-framework/notebooks/data`.
+When preparing the yaml file for launching one of the given services, you *should* specify a data folder to use. By default `/root/colla-framework/src/data` will be used unless you specify the environment variable `COLLA_DATA_FOLDER` (which you will set in the YAML file for the pod, see below). You should set it to point to a volume claim folder, e.g. `/nfs/colla-framework/src/data`.
 
 You also need to download the BabelNet indices, which unfortunately cannot be automatized due to the dataset size and the machine-unfriendly download form. The indices path *should* be stored in another environment variable `COLLA_BABELNET_INDEX`. If not provided, the default value is `COLLA_BABELNET_INDEX=$COLLA_DATA_FOLDER/babelnet/BabelNet-4.0.1`.
 
 - Register to [BabelNet](https://babelnet.org/login)
 - Apply for the > 29 GB  indices dataset.
 - Download it and extract it under your `$COLLA_BABELNET_INDEX`. This location should now have about 44 folders (each being a Lucene index) and 4 files.
-- If you are inside the pod, from inside `notebooks` invoke `setup_babelnet_index.py` which will update your BabelNet config. Otherwise, manually write "babelnet.dir=your_index_absolute_path" into ``config/babelnet.var.properties`` and comment out the rest. For more information refer to the API [readme](https://github.com/marcevrard/BabelNet-API#2-babelnet-index).
+- If you are inside the pod, from inside `src` invoke `setup_babelnet_index.py` which will update your BabelNet config. Otherwise, manually write "babelnet.dir=your_index_absolute_path" into ``config/babelnet.var.properties`` and comment out the rest. For more information refer to the API [readme](https://github.com/marcevrard/BabelNet-API#2-babelnet-index).
 
 ## Jupyter Development/Testing Pod
 
-This pod is useful for running the notebooks.
+This pod is useful for running the src.
 Remember to update your `COLLA_DATA_FOLDER`
 
 ```yaml
@@ -65,7 +71,7 @@ spec:
         - '--notebook-dir=/root' # Be sure to change this to /nfs when developing
       env:
         - name: COLLA_DATA_FOLDER
-          value: "/nfs/colla-framework/notebooks/data" # example of custom DATADIR on a persistent volume claim
+          value: "/nfs/colla-framework/src/data" # example of custom DATADIR on a persistent volume claim
       volumeMounts:
         - mountPath: /nfs/
           name: nfs-access

@@ -1,21 +1,18 @@
-import os
-import sys
-from typing import Tuple
+"""
+Pretraining
+"""
 
-import datasets
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, SubsetRandomSampler
-from transformers import BertModel
-
+from transformers import AutoTokenizer
 import wandb
 
 from tools.dataloaders import WikipediaCBOR
 
 from models import EntitiesAsExperts, EntitiesAsExpertsOutputs
-from models.training import train_model, get_optimizer, get_schedule, MetricWrapper, ModelTrainer, save_models
-from models.device import get_available_device
-from transformers import BertModel, AutoTokenizer
+from models.training import (train_model, get_optimizer, get_schedule,
+                            MetricWrapper, ModelTrainer, save_models)
 
 NUM_WORKERS = 0
 
@@ -109,7 +106,6 @@ def main():
     np.random.seed(42)
 
     wandb.init(project="EaEPretraining", config="configs/eae_pretraining.yaml")
-    print(wandb.config)
 
     wikipedia_cbor = WikipediaCBOR("wikipedia/car-wiki2020-01-01/enwiki2020.cbor", "wikipedia/car-wiki2020-01-01/partitions",
                                        #page_lim=wandb.config.wikipedia_article_nums,
@@ -130,7 +126,7 @@ def main():
     scheduler = get_schedule(epochs, optimizer, wiki_train_dataloader)
 
     metric = PretrainingMetric(wiki_validation_dataloader)
-    model_trainer = PretrainingModelTrainer(pretraining_model)
+    model_trainer = PretrainingModelTrainer(pretraining_model, watch_wandb=False)
 
     train_model(model_trainer, wiki_train_dataloader, wiki_validation_dataloader,
                 wiki_test_dataloader, optimizer, scheduler, epochs, metric,

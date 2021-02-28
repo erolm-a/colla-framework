@@ -427,12 +427,12 @@ yarn-error.log
 
 # Ignore downloaded datasets
 data/
-notebooks/data/
+src/data/
 
 # Ignore some folders automatically downloaded for BabelNet
-notebooks/3rdparty/lucene-index
-notebooks/resources
-notebooks/config
+src/3rdparty/lucene-index
+src/resources
+src/config
 
 # ... metals
 .metals/
