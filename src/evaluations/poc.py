@@ -6,6 +6,7 @@ from io import StringIO
 from typing import List
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, SubsetRandomSampler
 import tqdm
@@ -19,6 +20,7 @@ from models.training import (train_model, get_optimizer, get_schedule,
 
 # TODO: can we avoid recomputing the cross-entropy loss again?
 from torch.nn import CrossEntropyLoss
+import wandb
 
 from models.device import get_available_device
 
@@ -31,12 +33,14 @@ class PretrainingModelTrainer(ModelTrainer):
 
 
 class PretrainingMetric(MetricWrapper):
-    def __init__(self, dataloader: DataLoader):
-        super().__init__(dataloader)
+    def __init__(self, dataloader: DataLoader, enable_wandb=False):
+        super().__init__(dataloader, enable_wandb)
         self.wikipedia_dataset = dataloader.dataset # type: WikipediaCBOR
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        self.num_mask_labels = 0
+        self.correctly_predicted_labels = 0
         # return a N-dimensional log-likelihood to compute the perplexity with...
-        self.loss = CrossEntropyLoss()
+        self.loss_fcn = CrossEntropyLoss()
 
     def add_batch(
         self,
@@ -50,54 +54,58 @@ class PretrainingMetric(MetricWrapper):
 
             input_ids, output_ids, masked_links, links = inputs[:4]
 
-            #masked_sentences = self.tokenizer.batch_decode(input_ids)
-            ground_sentences = self.tokenizer.batch_decode(output_ids)
-            #masked_links_decoded = self.wikipedia_dataset.decode_compressed_entity_ids(masked_links)
-            ground_links_decoded = self.wikipedia_dataset.decode_compressed_entity_ids(links)
-
             mask_token = self.tokenizer.mask_token_id
 
             _, token_logits, entity_logits = outputs
 
-            # They are technically not logits but probability scores!
-            token_proba = token_logits.detach().cpu()
-            entity_proba = entity_logits.detach().cpu()
+            token_outputs = torch.argmax(token_logits, 1).detach().cpu()
+            #entity_outputs = torch.argmax(entity_logits, 1).detach().cpu()
 
-            token_outputs = torch.argmax(token_proba, 1)
-            predicted_sentences = self.tokenizer.batch_decode(token_outputs)
-            entity_outputs = torch.argmax(entity_proba, 1)
+            ground_links_decoded = self.wikipedia_dataset.decode_compressed_entity_ids(links)
             predicted_links_decoded = self.wikipedia_dataset.decode_compressed_entity_ids(entity_outputs)
 
             # get the sentences where there is a masked token that is not properly classified
-            positions = torch.nonzero(input_ids == mask_token, as_tuples=True)
+            positions = torch.nonzero(input_ids == mask_token, as_tuple=True)
+
+            if positions.dim() > 0:
+                self.num_mask_labels += len(positions)
             
             correct_tokens = output_ids[positions]
-            correct_links = links[positions]
-            chosen_tokens = token_outputs[positions]
-            chosen_entities = token_outputs[positions]
+            correct_links = links[positions].cpu()
 
-            # small issue, we don't have the perplexity data 
-            self.token_perplexity += float(torch.exp(self.loss(token_logits[positions], correct_tokens)))
-            self.entity_perplexity += float(torch.exp(self.loss(entity_logits[positions], correct_links)))
+            token_logits = token_logits.cpu()
+            entity_logits = entity_logits.cpu()
 
+            self.token_perplexity += float(torch.exp(self.loss_fcn(token_logits[positions], correct_tokens)))
+            #self.entity_perplexity += float(torch.exp(self.loss_fcn(entity_logits[positions], correct_links)))
 
             # pretty HTML printing
-            for input_id, ground_sentence, predicted_sentence in \
-                    zip(input_ids, ground_sentences, predicted_sentences):
+            
+            masked_sentences = self.tokenizer.batch_decode(input_ids)
+            expected_sentences = []
+            predicted_sentences = []
+
+            for input_id, output_id, token_outputs_sentence, input_entity_ in zip(input_ids, output_ids, token_outputs):
+                ground_sentence = self.tokenizer.convert_ids_to_tokens(output_id)
+                predicted_sentence = self.tokenizer.convert_ids_to_tokens(token_outputs_sentence)
 
                 masked_tokens = torch.nonzero(input_id == mask_token).squeeze()
-
                 masked_tok_idx = 0
 
-                predicted_html = StringIO()
                 expected_html = StringIO()
+                predicted_html = StringIO()
 
-                for idx, (ground_tok, predicted_tok) in enumerate(zip(ground_sentence, predicted_sentence)):
-                    if masked_tok_idx < len(masked_tokens) and idx == masked_tokens[masked_idx]:
-                        if predicted_sentence[idx] != ground_sentences[idx]:
+                for idx, (ground_tok, predicted_tok) in enumerate(
+                    zip(ground_sentence, predicted_sentence)
+                ):
+                    if masked_tokens.dim() > 0 and masked_tok_idx < len(masked_tokens) \
+                        and idx == bool(masked_tokens[masked_tok_idx]):
+                        masked_tok_idx += 1
+                        if predicted_sentence[idx] != ground_sentence[idx]:
                             expected_html.write(f'<b style="text-color: red">{ground_tok}</b>')
                             predicted_html.write(f'<b style="text-color: red">{predicted_tok}</b>')
                         else:
+                            self.correctly_predicted_labels += 1
                             expected_html.write(f'<b style="text-color: green">{ground_tok}</b>')
                             predicted_html.write(f'<b style="text-color: green">{predicted_tok}</b>')
                     else:
@@ -109,15 +117,56 @@ class PretrainingMetric(MetricWrapper):
                     expected_html.write(" ")
                     predicted_html.write(" ")
 
+                expected_sentences.append(expected_html.getvalue())
+                predicted_sentences.append(predicted_html.getvalue())
+
+            for input_id, masked_link_sentence, ground_link_sentence, predicted_link_sentence in \
+                zip(input_ids, masked_links, ground_links_decoded, predicted_links_decoded):
+
+                masked_links = torch.nonzero(masked_links == 0).squeeze()
+                masked_link_idx = 0
+
+                expected_link = StringIO()
+                predicted_link = StringIO()
+
+                
+            if self.enable_wandb:
+                example_toks_table = wandb.Table(
+                    dataframe=pd.DataFrame({
+                        "Token ground inputs: ": masked_sentences,
+                        "Expected TokenPred Output": expected_sentences,
+                        "Actual TokenPred Output": predicted_sentences
+                        })
+                    )
+
+                wandb.log({"validation_example": example_toks_table})
+            else:
+                print("===========")
+                print(expected_sentences)
+                print(predicted_sentences)
+
+
             # TODO: might be interesting to add an attention visualization graph
             # possible ideas: BertViz
 
     def compute(self, epoch: int) -> float:
         """
+        Compute the metric after the batches have been added.
+        This call may call wandb to perform logging.
         """
         avg_loss = self.loss / self.dataloader_length
+        accuracy = self.correctly_predicted_labels / self.num_mask_labels
+
+        if self.enable_wandb:
+            wandb.log({
+                "val_loss": avg_loss,
+                "token_ppl": self.token_perplexity,
+                "token_acc": accuracy,
+                #"entity_ppl": self.entity_perplexity,
+                "epoch": epoch})
 
         return avg_loss
+
 
     def reset(self):
         super().reset()
@@ -125,16 +174,12 @@ class PretrainingMetric(MetricWrapper):
         self.entity_perplexity = 0.0
 
 
-NUM_WORKERS = 1
-
-np.random.seed(42)
-
 def get_dataloaders(wikipedia_cbor):
 
     batch_size = 1
     is_dev = True
     if is_dev:
-        wiki_dev_size = int(0.1*len(wikipedia_cbor))
+        wiki_dev_size = int(0.01*len(wikipedia_cbor))
     else:
         wiki_dev_size = len(wikipedia_cbor)
  
@@ -165,6 +210,7 @@ def get_dataloaders(wikipedia_cbor):
     return (wiki_train_dataloader, wiki_validation_dataloader, wiki_test_dataloader)
 
 def main():
+    wandb.init(project="EaEPretraining")
     np.random.seed(42)
 
     wikipedia_cbor = WikipediaCBOR("wikipedia/car-wiki2020-01-01/enwiki2020.cbor", "wikipedia/car-wiki2020-01-01/partitions",
@@ -185,13 +231,13 @@ def main():
                                 full_finetuning=False)
     scheduler = get_schedule(epochs, optimizer, wiki_train_dataloader)
 
-    metric = PretrainingMetric(wiki_validation_dataloader)
-    model_trainer = PretrainingModelTrainer(pretraining_model, watch_wandb=False)
+    metric = PretrainingMetric(wiki_validation_dataloader, enable_wandb=True)
+    model_trainer = PretrainingModelTrainer(pretraining_model, watch_wandb=True, enable_wandb=True)
 
     
     train_model(model_trainer, wiki_train_dataloader, wiki_validation_dataloader,
                 wiki_test_dataloader, optimizer, scheduler, epochs, metric,
-                validation_frequency=10,
+                validation_frequency=200,
                 gradient_accumulation_factor=1)
 
 
@@ -207,3 +253,7 @@ def main():
         #loss.backward()
         #optimizer.step()
         #scheduler.ste
+    """
+    
+if __name__ == "__main__":
+    main()

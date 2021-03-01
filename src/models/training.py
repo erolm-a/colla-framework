@@ -7,7 +7,7 @@ import json
 import os
 from typing import cast, Callable, Optional, List, Tuple, Any, Union, Sequence
 
-import deprecated
+import numpy as np
 import torch
 from torch.nn import Module
 from torch.nn.utils import clip_grad_norm_
@@ -43,9 +43,10 @@ class MetricWrapper:
     sends evaluation loss to W&B.
     """
 
-    def __init__(self, dataloader: DataLoader):
+    def __init__(self, dataloader: DataLoader, enable_wandb=True):
         self.reset()
         self.dataloader_length = len(dataloader)
+        self.enable_wandb = enable_wandb
 
     def add_batch(self, _inputs, _outputs, loss: float):
         """Add a batch
@@ -64,7 +65,8 @@ class MetricWrapper:
         This call may call wandb to perform logging.
         """
         avg_loss = self.loss / self.dataloader_length
-        #wandb.log({'val_loss': avg_loss, "epoch": epoch})
+        if self.enable_wandb:
+            wandb.log({'val_loss': avg_loss, "epoch": epoch})
 
         return avg_loss
 
@@ -148,7 +150,7 @@ class ModelTrainer(ABC):
         # make mypy happy
         return None
 
-    def train_log(self, loss: float, example_ct: int, epoch: int, verbose=False):
+    def train_log(self, loss: float, epoch: int, verbose=False):
         """
         Log train step. For the evaluation we rely on MetricWrapper
         """
@@ -158,7 +160,7 @@ class ModelTrainer(ABC):
             log_payload["gpu_mem_allocated"] = torch.cuda.memory_allocated()
 
         if self.enable_wandb:
-            wandb.log(log_payload, step=example_ct)
+            wandb.log(log_payload)
 
     def zero_grad(self):
         self.model.zero_grad()
@@ -193,9 +195,10 @@ def train_model(
     :param seed if provided, set up the seed.
     """
 
-    train_example_ct = 0
+    # train_example_ct = 0
 
     torch.manual_seed(seed)
+    np.random.seed(seed)
 
     for epoch in range(epochs):
         model_trainer.training = True
@@ -222,11 +225,12 @@ def train_model(
                 optimizer.zero_grad()
                 pending_updates = False
 
-            train_example_ct += len(batch[0])
+            #train_example_ct += len(batch[0])
 
             if (batch_idx + 1) % 25 == 0:
                 model_trainer.train_log(
-                    loss_float, train_example_ct, epoch)
+                    #loss_float, train_example_ct, epoch)
+                    loss_float, epoch)
 
             # Every `validation_frequency` steps validations must be performed
             if (batch_idx + 1) % validation_frequency == 0:
