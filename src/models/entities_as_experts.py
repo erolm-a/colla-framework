@@ -418,7 +418,8 @@ class EntitiesAsExperts(Module):
                                                output_hidden_states=True)
 
         hidden_attention = first_block_outputs[0]
-        bio_loss, bio_outputs = self.bioclassifier(hidden_attention, attention_mask=attention_mask,
+        bio_loss, bio_outputs = self.bioclassifier(hidden_attention,
+                                                   attention_mask=attention_mask,
                                                    labels=mention_boundaries)
 
         if not compute_loss:
@@ -439,7 +440,7 @@ class EntitiesAsExperts(Module):
         loss = None
 
         if compute_loss:
-            loss = entity_loss + bio_loss + token_pred_loss# + entity_pred_loss
+            loss = entity_loss + bio_loss + token_pred_loss + entity_pred_loss
 
         return (loss, EntitiesAsExpertsOutputs(
             bert_output,
@@ -501,6 +502,7 @@ class EaEForQuestionAnswering(Module):
         """
         super().__init__()
         self.eae = eae
+        self.eae.training = False
         self.qa_outputs = Linear(eae.config["hidden_size"], 2)
         self.config = eae.config
 

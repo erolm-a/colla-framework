@@ -28,7 +28,7 @@ DEVICE = get_available_device()
 MAX_GRAD_NORM = 1.0
 
 
-class MetricWrapper:
+class MetricWrapper(ABC):
     """
     A mere wrapper for a HuggingFace's Datasets Metric.
 
@@ -44,11 +44,15 @@ class MetricWrapper:
     """
 
     def __init__(self, dataloader: DataLoader, enable_wandb=True):
+        """
+        :warning All the children with a custom __init__ must redefine this constructor
+        """
         self.reset()
         self.dataloader_length = len(dataloader)
         self.enable_wandb = enable_wandb
 
-    def add_batch(self, _inputs, _outputs, loss: float):
+    @abstractmethod
+    def add_batch(self, _inputs, _outputs, loss: float, is_validation: bool):
         """Add a batch
 
         :param _inputs
@@ -56,25 +60,24 @@ class MetricWrapper:
                The training loop is type-agnostic, but is known to return a list of return values
                (or just a singleton). 
         :param loss the loss of the model
+        :param is_validation if True allow to "peek" and log inputs from the dataset.
         """
-        self.loss += loss
+        pass
 
+    @abstractmethod
     def compute(self, epoch: int) -> float:
         """
         Compute the metric after the batches have been added.
         This call may call wandb to perform logging.
         """
-        avg_loss = self.loss / self.dataloader_length
-        if self.enable_wandb:
-            wandb.log({'val_loss': avg_loss, "epoch": epoch})
+        pass
 
-        return avg_loss
-
+    @abstractmethod
     def reset(self):
         """
         Reset the internal metric counter.
         """
-        self.loss = 0.0
+        pass
 
 
 class ModelTrainer(ABC):
@@ -133,9 +136,14 @@ class ModelTrainer(ABC):
         """
         pass
 
-    def step(self, batch, metric: MetricWrapper) -> Optional[torch.Tensor]:
+    def step(self, batch, metric: MetricWrapper, is_validation=True) -> Optional[torch.Tensor]:
         """
-        :param metric if evaluating, metric.add_batch() will be called. Otherwise it will be ignored
+        :param batch
+        :param metric if evaluating, metric.add_batch() will be called. Otherwise it will be
+               ignored
+        :param is_validation if evaluating, metric will assume that the current batch is taken from
+               a validation set, otherwise from a test set. As a consequence example logging may be
+               enabled or disabled.
         """
         model_input, metric_input = self.load_from_dataloader(batch)
         inputs = tuple(elem.to(DEVICE) for elem in model_input)
@@ -145,7 +153,7 @@ class ModelTrainer(ABC):
             return loss
 
         loss = float(loss)
-        metric.add_batch(model_input + metric_input, outputs, loss)
+        metric.add_batch(model_input + metric_input, outputs, loss, is_validation)
 
         # make mypy happy
         return None
@@ -224,6 +232,8 @@ def train_model(
                 scheduler.step()
                 optimizer.zero_grad()
                 pending_updates = False
+            
+            del loss
 
             #train_example_ct += len(batch[0])
 
@@ -240,7 +250,7 @@ def train_model(
 
                 with torch.no_grad():
                     for validation_batch in tqdm(validation_dataloader):
-                        model_trainer.step(validation_batch, metric)
+                        model_trainer.step(validation_batch, metric, is_validation=True)
 
                 metric.compute(epoch)
 
@@ -252,6 +262,10 @@ def train_model(
             scheduler.step()
             model_trainer.zero_grad()
             pending_updates = False
+
+        with torch.no_grad():
+            for test_batch in tqdm(testing_dataloader):
+                model_trainer.step(test_batch, metric, is_validation=False)
 
     model_trainer.training = False
 

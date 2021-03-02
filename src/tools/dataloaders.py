@@ -249,8 +249,8 @@ class WikipediaCBOR(Dataset):
 
             else:
                 for i in range(span[0], span[1]):
-                    output_tokens[i] = 103  # [MASK]
-                    output_entities[i] = 103  # [MASK]
+                    output_tokens[i] = 103 # [MASK] 
+                    output_entities[i] = 0 # TODO allocate a special [MASK] token for links.
         return output_tokens, output_entities, output_bio
 
     def preprocess_page(self, enumerated_page: Tuple[int, Page]) -> PageFormat:
