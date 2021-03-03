@@ -5,6 +5,8 @@ Pretraining. This is a temporary debugging script and will be removed.
 from io import StringIO
 from typing import List
 
+import pprint
+
 import numpy as np
 import pandas as pd
 import torch
@@ -45,9 +47,9 @@ class PretrainingMetric(MetricWrapper):
         inputs: List[torch.Tensor],
         outputs: EntitiesAsExpertsOutputs,
         loss: float,
-        is_validation: bool
     ):
         with torch.no_grad():
+            self.loss += loss
 
             input_ids, output_ids, masked_links, links = inputs[:4]
 
@@ -78,14 +80,13 @@ class PretrainingMetric(MetricWrapper):
             self.token_perplexity += float(torch.exp(
                 self.loss_fcn(token_logits[token_mask_positions], correct_tokens)))
             
-
             # TODO: masked entities should use a different id than 0
             link_mask_positions = torch.nonzero((links > 0) & (masked_links == 0), as_tuple=True)
             self.num_mask_links += len(link_mask_positions[0])
             self.correctly_predicted_links += len(torch.nonzero(
                 entity_outputs[link_mask_positions] == links[link_mask_positions]))
 
-            if is_validation:
+            if self.is_validation:
                 self.log_example(input_ids, output_ids, token_outputs)
 
             
@@ -101,6 +102,8 @@ class PretrainingMetric(MetricWrapper):
         expected_sentences = []
         predicted_sentences = []
         mask_token = self.tokenizer.mask_token_id
+        masked_sentences = self.tokenizer.batch_decode(input_ids)
+        self.masked_sentences.extend(masked_sentences)
 
         for input_id, output_id, token_outputs_sentence in \
             zip(input_ids, output_ids, token_outputs):
@@ -125,14 +128,14 @@ class PretrainingMetric(MetricWrapper):
                     masked_tok_idx += 1
                     if predicted_sentence[idx] != ground_sentence[idx]:
                         expected_html.write(
-                            f'<b style="text-color: red">{ground_tok}</b>')
+                            f'<b style="color: red">{ground_tok}</b>')
                         predicted_html.write(
-                            f'<b style="text-color: red">{predicted_tok}</b>')
+                            f'<b style="color: red">{predicted_tok}</b>')
                     else:
                         expected_html.write(
-                            f'<b style="text-color: green">{ground_tok}</b>')
+                            f'<b style="color: green">{ground_tok}</b>')
                         predicted_html.write(
-                            f'<b style="text-color: green">{predicted_tok}</b>')
+                            f'<b style="color: green">{predicted_tok}</b>')
                 else:
                     # We do not care about non-mask tokens. For what we know,
                     # the model may predict utter rubbish and we won't care except
@@ -157,8 +160,8 @@ class PretrainingMetric(MetricWrapper):
             expected_sentences.append(expected_html.getvalue())
             predicted_sentences.append(predicted_html.getvalue())
 
-            self.expected_sentences.extend(expected_sentences)
-            self.predicted_sentences.extend(predicted_sentences)
+        self.expected_sentences.extend(expected_sentences)
+        self.predicted_sentences.extend(predicted_sentences)
 
     def compute(self, epoch: int) -> float:
         """
@@ -166,39 +169,46 @@ class PretrainingMetric(MetricWrapper):
         This call may call wandb to perform logging.
         """
         avg_loss = self.loss / self.dataloader_length
+        prefix = "val_" if self.is_validation else "test_"
         token_accuracy = self.correctly_predicted_labels / self.num_mask_labels if self.num_mask_labels else 0.0
 
         entity_accuracy = self.correctly_predicted_links / self.num_mask_links if self.num_mask_links else 0.0
 
+        payload = {
+                f"{prefix}loss": avg_loss,
+                f"{prefix}token_ppl": self.token_perplexity,
+                f"{prefix}token_acc": token_accuracy,
+                f"{prefix}entity_acc": entity_accuracy,
+                "epoch": epoch
+            }
+
         if self.enable_wandb:
-            wandb.log({
-                "val_loss": avg_loss,
-                "token_ppl": self.token_perplexity,
-                "token_acc": token_accuracy,
-                "entity_acc": entity_accuracy,
-                "epoch": epoch})
+            wandb.log(payload)
 
-            art = wandb.Artifact("validation_metrics", type="evaluation")
-            table = wandb.Table(columns=["Token ground inputs",
-                "Expected TokenPred Output", "Actual TokenPred Output"])
-            
-            for record in zip(self.masked_sentences, self.expected_sentences,
-                              self.predicted_sentences):
-                table.add_data(*map(wandb.Html, record))
+            if self.is_validation and len(self.expected_sentences) > 0:
+                art = wandb.Artifact("validation_metrics", type="evaluation")
+                table = wandb.Table(columns=["Masked token inputs",
+                    "Expected Output", "Actual TokenPred Output"])
+                for record in zip(self.masked_sentences, self.expected_sentences,
+                                self.predicted_sentences):
+                    table.add_data(*map(wandb.Html, record))
 
-            art.add(table, "html")
-            
-            wandb.log_artifact(art)
+                art.add(table, "html")
+                
+                wandb.log_artifact(art)
+               
+
         else:
             print("===========")
+            pprint.pprint(payload)
             print(self.expected_sentences)
             print(self.predicted_sentences)
 
         return avg_loss
 
 
-    def reset(self):
-        super().reset()
+    def reset(self, is_validation: bool):
+        super().reset(is_validation)
         self.loss = 0.0
         self.token_perplexity = 0.0
         self.num_mask_labels = 0
@@ -242,20 +252,36 @@ def get_dataloaders(wikipedia_cbor: WikipediaCBOR, batch_size: int, is_dev: bool
 
     return (wiki_train_dataloader, wiki_validation_dataloader, wiki_test_dataloader)
 
+ENABLE_WANDB = True
 def main():
-    #wandb.init(project="EaEPretraining", config="configs/eae_pretraining.yaml")
     np.random.seed(42)
 
-    # wikipedia_article_nums = wandb.config.wikipedia_article_nums
-    # cutoff_frequency = wandb.config.wikipedia_cutoff_frequency
-    # batch_size = wandb.config.batch_size
-    # is_dev = wandb.config.is_dev
-    # gradient_accum_size = wandb.config.gradient_accum_size
-    wikipedia_article_nums = 100000
-    wikipedia_cutoff_frequency = 0.03
-    batch_size = 1
-    gradient_accum_size = 1
-    is_dev = True
+    if ENABLE_WANDB:
+        wandb.init(project="EaEPretraining", config="configs/eae_pretraining.yaml")
+        wikipedia_article_nums = wandb.config.wikipedia_article_nums
+        wikipedia_cutoff_frequency = wandb.config.wikipedia_cutoff_frequency
+        batch_size = wandb.config.batch_size
+        is_dev = wandb.config.is_dev
+        gradient_accum_size = wandb.config.gradient_accum_size
+        learning_rate = wandb.config.learning_rate
+        full_finetuning = wandb.config.full_finetuning
+        epochs = wandb.config.pretraining_epochs
+        l0 = wandb.config.l0
+        l1 = wandb.config.l1
+        entity_embedding_size = wandb.config.entity_embedding_size
+    else:
+        wikipedia_article_nums = 100000
+        wikipedia_cutoff_frequency = 0.03
+        batch_size = 1
+        gradient_accum_size = 1
+        is_dev = True
+        l0 = 4
+        l1 = 8
+        entity_embedding_size = 256
+        learning_rate = 1e-4
+        full_finetuning = False
+        epochs = 1
+
 
 
     wikipedia_cbor = WikipediaCBOR("wikipedia/car-wiki2020-01-01/enwiki2020.cbor",
@@ -269,19 +295,6 @@ def main():
     wiki_train_dataloader, wiki_validation_dataloader, wiki_test_dataloader = \
         get_dataloaders(wikipedia_cbor, batch_size, is_dev)
 
-    #l0 = wandb.config.l0
-    #l1 = wandb.config.l1
-    #entity_embedding_size = wandb.config.entity-entity_embedding_size
-    l0 = 4
-    l1 = 8
-    entity_embedding_size = 256
-    # learning_rate = wandb.config.learning_rate
-    # full_finetuning = wandb.config.full_finetuning
-    # epochs = wandb.config.pretraining_epochs
-    learning_rate = 1e-4
-    full_finetuning = False
-    epochs = 1
-
     pretraining_model = EntitiesAsExperts(l0,
                                           l1,
                                           wikipedia_cbor.max_entity_num,
@@ -293,8 +306,8 @@ def main():
                                 full_finetuning=full_finetuning)
     scheduler = get_schedule(epochs, optimizer, wiki_train_dataloader)
 
-    metric = PretrainingMetric(wiki_validation_dataloader, enable_wandb=False)
-    model_trainer = PretrainingModelTrainer(pretraining_model, watch_wandb=False, enable_wandb=False)
+    metric = PretrainingMetric(wiki_validation_dataloader, enable_wandb=ENABLE_WANDB)
+    model_trainer = PretrainingModelTrainer(pretraining_model, watch_wandb=ENABLE_WANDB, enable_wandb=ENABLE_WANDB)
 
     
     train_model(model_trainer, wiki_train_dataloader, wiki_validation_dataloader,

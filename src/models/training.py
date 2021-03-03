@@ -47,12 +47,12 @@ class MetricWrapper(ABC):
         """
         :warning All the children with a custom __init__ must redefine this constructor
         """
-        self.reset()
+        self.reset(True)
         self.dataloader_length = len(dataloader)
         self.enable_wandb = enable_wandb
 
     @abstractmethod
-    def add_batch(self, _inputs, _outputs, loss: float, is_validation: bool):
+    def add_batch(self, _inputs, _outputs, loss: float):
         """Add a batch
 
         :param _inputs
@@ -60,7 +60,6 @@ class MetricWrapper(ABC):
                The training loop is type-agnostic, but is known to return a list of return values
                (or just a singleton). 
         :param loss the loss of the model
-        :param is_validation if True allow to "peek" and log inputs from the dataset.
         """
         pass
 
@@ -73,7 +72,7 @@ class MetricWrapper(ABC):
         pass
 
     @abstractmethod
-    def reset(self):
+    def reset(self, is_validation: bool):
         """
         Reset the internal metric counter.
         """
@@ -153,7 +152,8 @@ class ModelTrainer(ABC):
             return loss
 
         loss = float(loss)
-        metric.add_batch(model_input + metric_input, outputs, loss, is_validation)
+        metric.is_validation = is_validation
+        metric.add_batch(model_input + metric_input, outputs, loss)
 
         # make mypy happy
         return None
@@ -213,6 +213,7 @@ def train_model(
         optimizer.zero_grad()
 
         pending_updates = False
+        train_loss = 0.0
 
         for batch_idx, batch in enumerate(tqdm(train_dataloader)):
             loss = cast(torch.Tensor, model_trainer.step(
@@ -220,7 +221,7 @@ def train_model(
 
             loss.backward()
 
-            loss_float = float(loss)
+            train_loss += float(loss)
 
             pending_updates = True
 
@@ -235,18 +236,15 @@ def train_model(
             
             del loss
 
-            #train_example_ct += len(batch[0])
-
             if (batch_idx + 1) % 25 == 0:
-                model_trainer.train_log(
-                    #loss_float, train_example_ct, epoch)
-                    loss_float, epoch)
+                model_trainer.train_log(train_loss / 25, epoch)
+                train_loss = 0.0
 
             # Every `validation_frequency` steps validations must be performed
             if (batch_idx + 1) % validation_frequency == 0:
                 model_trainer.training = False
                 optimizer.zero_grad()
-                metric.reset()
+                metric.reset(True)
 
                 with torch.no_grad():
                     for validation_batch in tqdm(validation_dataloader):
@@ -263,6 +261,7 @@ def train_model(
             model_trainer.zero_grad()
             pending_updates = False
 
+        metric.reset(False)
         with torch.no_grad():
             for test_batch in tqdm(testing_dataloader):
                 model_trainer.step(test_batch, metric, is_validation=False)
