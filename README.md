@@ -9,6 +9,10 @@ Flask: [![](https://images.microbadger.com/badges/version/erolmatei/colla-framew
 
 The Entities as experts model can be found under `src/models` and the evaluation scripts to run them (although still under severe rewriting) are under `src/evaluations`. More instructions on how to run them coming soon!
 
+# Note II: On collaborations
+
+Since this repository is also Enrico Trombetta's Year 4 Dissertation, code collaboration is disallowed due to antiplagiarism requirements until the academic year is over.
+
 ---
 
 ## Description

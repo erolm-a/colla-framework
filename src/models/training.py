@@ -48,6 +48,7 @@ class MetricWrapper(ABC):
         :warning All the children with a custom __init__ must redefine this constructor
         """
         self.reset(True)
+        self.dataloader = dataloader
         self.dataloader_length = len(dataloader)
         self.enable_wandb = enable_wandb
 
@@ -241,7 +242,7 @@ def train_model(
                 train_loss = 0.0
 
             # Every `validation_frequency` steps validations must be performed
-            if (batch_idx + 1) % validation_frequency == 0:
+            if validation_dataloader and (batch_idx + 1) % validation_frequency == 0:
                 model_trainer.training = False
                 optimizer.zero_grad()
                 metric.reset(True)
@@ -262,11 +263,17 @@ def train_model(
             pending_updates = False
 
         metric.reset(False)
-        with torch.no_grad():
-            for test_batch in tqdm(testing_dataloader):
-                model_trainer.step(test_batch, metric, is_validation=False)
+        
+        if testing_dataloader:
+            with torch.no_grad():
+                model_trainer.training = False
+                for test_batch in tqdm(testing_dataloader):
+                    model_trainer.step(test_batch, metric, is_validation=False)
+                
+                metric.compute(epoch)
 
     model_trainer.training = False
+
 
 
 def get_optimizer(model: Module, learning_rate: float, full_finetuning=False):

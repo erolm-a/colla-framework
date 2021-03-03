@@ -351,7 +351,7 @@ fn tokenize_from_iterator_helper(
 
         let inputs = page_inputs.as_slice().iter().map(|x| EncodeInput::Single(x.text.to_owned())).collect();
 
-        let encodings = tokenizer.encode_batch(inputs, false)
+        let encodings = tokenizer.encode_batch(inputs, true)
                                  .map_err(|e| simple_error_lined!(e))?;
 
         let page_outputs : Vec<PageFormatOutput> = encodings.iter()

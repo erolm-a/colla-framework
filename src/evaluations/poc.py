@@ -57,8 +57,8 @@ class PretrainingMetric(MetricWrapper):
 
             _, token_logits, entity_logits = outputs
 
-            token_outputs = torch.argmax(token_logits, 1).detach().cpu()
-            entity_outputs = torch.argmax(entity_logits, 1).detach().cpu()
+            token_outputs = torch.argmax(token_logits, 2).detach().cpu()
+            entity_outputs = torch.argmax(entity_logits, 2).detach().cpu()
 
             #ground_links_decoded = self.wikipedia_dataset.decode_compressed_entity_ids(links)
             #predicted_links_decoded = self.wikipedia_dataset.decode_compressed_entity_ids(entity_outputs)
@@ -75,7 +75,7 @@ class PretrainingMetric(MetricWrapper):
             #correct_links = links[token_mask_positions].cpu()
 
             token_logits = token_logits.cpu()
-            entity_logits = entity_logits.cpu()
+            # entity_logits = entity_logits.cpu()
 
             self.token_perplexity += float(torch.exp(
                 self.loss_fcn(token_logits[token_mask_positions], correct_tokens)))
@@ -124,7 +124,7 @@ class PretrainingMetric(MetricWrapper):
                 zip(ground_sentence, predicted_sentence)
             ):
                 if masked_tokens.dim() > 0 and masked_tok_idx < len(masked_tokens) \
-                        and idx == bool(masked_tokens[masked_tok_idx]):
+                        and idx == int(masked_tokens[masked_tok_idx]):
                     masked_tok_idx += 1
                     if predicted_sentence[idx] != ground_sentence[idx]:
                         expected_html.write(
@@ -168,7 +168,7 @@ class PretrainingMetric(MetricWrapper):
         Compute the metric after the batches have been added.
         This call may call wandb to perform logging.
         """
-        avg_loss = self.loss / self.dataloader_length
+        avg_loss = self.loss / (self.dataloader_length * self.dataloader.batch_size)
         prefix = "val_" if self.is_validation else "test_"
         token_accuracy = self.correctly_predicted_labels / self.num_mask_labels if self.num_mask_labels else 0.0
 
@@ -196,7 +196,6 @@ class PretrainingMetric(MetricWrapper):
                 art.add(table, "html")
                 
                 wandb.log_artifact(art)
-               
 
         else:
             print("===========")
@@ -312,11 +311,11 @@ def main():
     
     train_model(model_trainer, wiki_train_dataloader, wiki_validation_dataloader,
                 wiki_test_dataloader, optimizer, scheduler, epochs, metric,
-                validation_frequency= 50 * batch_size,
+                validation_frequency= 500 * batch_size,
                 gradient_accumulation_factor=gradient_accum_size)
 
 
-    # save_models(pretraining_eae_100k=pretraining_model)
+    save_models(pretraining_eae_100k=pretraining_model)
     
 if __name__ == "__main__":
     main()
