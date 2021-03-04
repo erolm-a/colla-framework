@@ -2,6 +2,7 @@
 Pretraining. This is a temporary debugging script and will be removed.
 """
 
+import math
 from io import StringIO
 from typing import List
 
@@ -35,12 +36,18 @@ class PretrainingModelTrainer(ModelTrainer):
 
 
 class PretrainingMetric(MetricWrapper):
-    def __init__(self, dataloader: DataLoader, enable_wandb=False):
+    def __init__(
+        self,
+        dataloader: DataLoader,
+        enable_wandb=False,
+        enable_example_wandb=False
+    ):
         super().__init__(dataloader, enable_wandb)
         self.wikipedia_dataset = dataloader.dataset # type: WikipediaCBOR
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
         # for computing the token perplexity
         self.loss_fcn = CrossEntropyLoss()
+        self.enable_example_wandb = enable_example_wandb
 
     def add_batch(
         self,
@@ -77,8 +84,9 @@ class PretrainingMetric(MetricWrapper):
             token_logits = token_logits.cpu()
             # entity_logits = entity_logits.cpu()
 
-            self.token_perplexity += float(torch.exp(
-                self.loss_fcn(token_logits[token_mask_positions], correct_tokens)))
+            self.token_perplexity += float(
+                self.loss_fcn(token_logits[token_mask_positions],
+                              correct_tokens))
             
             # TODO: masked entities should use a different id than 0
             link_mask_positions = torch.nonzero((links > 0) & (masked_links == 0), as_tuple=True)
@@ -168,15 +176,22 @@ class PretrainingMetric(MetricWrapper):
         Compute the metric after the batches have been added.
         This call may call wandb to perform logging.
         """
-        avg_loss = self.loss / (self.dataloader_length * self.dataloader.batch_size)
-        prefix = "val_" if self.is_validation else "test_"
-        token_accuracy = self.correctly_predicted_labels / self.num_mask_labels if self.num_mask_labels else 0.0
 
-        entity_accuracy = self.correctly_predicted_links / self.num_mask_links if self.num_mask_links else 0.0
+        total_length = self.dataloader_length * self.dataloader.batch_size
+        avg_loss = self.loss / total_length
+        prefix = "val_" if self.is_validation else "test_"
+
+        token_accuracy = self.correctly_predicted_labels / self.num_mask_labels \
+            if self.num_mask_labels else 0.0
+
+        entity_accuracy = self.correctly_predicted_links / self.num_mask_links \
+            if self.num_mask_links else 0.0
+
+        token_perplexity = math.exp(self.token_perplexity / total_length)
 
         payload = {
                 f"{prefix}loss": avg_loss,
-                f"{prefix}token_ppl": self.token_perplexity,
+                f"{prefix}token_ppl": token_perplexity,
                 f"{prefix}token_acc": token_accuracy,
                 f"{prefix}entity_acc": entity_accuracy,
                 "epoch": epoch
@@ -186,22 +201,23 @@ class PretrainingMetric(MetricWrapper):
             wandb.log(payload)
 
             if self.is_validation and len(self.expected_sentences) > 0:
-                art = wandb.Artifact("validation_metrics", type="evaluation")
-                table = wandb.Table(columns=["Masked token inputs",
-                    "Expected Output", "Actual TokenPred Output"])
-                for record in zip(self.masked_sentences, self.expected_sentences,
-                                self.predicted_sentences):
-                    table.add_data(*map(wandb.Html, record))
+                if self.enable_example_wandb:
+                    art = wandb.Artifact("validation_metrics", type="evaluation")
+                    table = wandb.Table(columns=["Masked token inputs",
+                        "Expected Output", "Actual TokenPred Output"])
+                    for record in zip(self.masked_sentences, self.expected_sentences,
+                                    self.predicted_sentences):
+                        table.add_data(*map(wandb.Html, record))
 
-                art.add(table, "html")
-                
-                wandb.log_artifact(art)
-
+                    art.add(table, "html")
+                    
+                    wandb.log_artifact(art)
         else:
             print("===========")
             pprint.pprint(payload)
-            print(self.expected_sentences)
-            print(self.predicted_sentences)
+        
+        print(self.expected_sentences)
+        print(self.predicted_sentences)
 
         return avg_loss
 
