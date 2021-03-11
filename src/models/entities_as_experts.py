@@ -11,9 +11,13 @@ from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLo
     Parameter, GELU
 import torch.nn.functional as F
 from transformers import BertModel, BertConfig
+from transformers.models.bert.modeling_bert import BaseModelOutputWithPastAndCrossAttentions
 import wandb
 
+from tools.dumps import wrap_open
+
 from .device import get_available_device
+from .training import TorchScriptDumpable
 
 DEVICE = get_available_device()
 
@@ -340,12 +344,12 @@ class TokenPred(TokenPredHead):
 
 
 class EntitiesAsExpertsOutputs(NamedTuple):
-    hidden_attention: torch.Tensor
+    bert_output: BaseModelOutputWithPastAndCrossAttentions
     token_prediction_scores: torch.Tensor
     entity_prediction_scores: torch.Tensor
 
 
-class EntitiesAsExperts(Module):
+class EntitiesAsExperts(Module, TorchScriptDumpable):
     """
     This is the Entities As Experts implementation. Similarly to Transformers' Bert,
     task-specific heads should be built on top of this class.
@@ -454,7 +458,8 @@ class EntitiesAsExperts(Module):
         Load a pretrained model. Probe wandb to get the right checkpoint to use
 
         :param config the configuration to use
-        :run_id the run identifier that states where it has been saved.
+        :param run_id the run identifier that states where it has been saved.
+
         """
 
         checkpoint_path = config + ".h5"
@@ -472,6 +477,16 @@ class EntitiesAsExperts(Module):
                                          map_location=torch.device('cpu')))
 
         return model
+    
+    @staticmethod
+    def from_pretrained_offline(config: str):
+        with wrap_open(f"eae/{config}.json") as f:
+            config_dict = json.load(f)
+        
+        with wrap_open(f"eae/{config}.h5", "rb") as f:
+            model = EntitiesAsExperts(**config_dict)
+            model.load_state_dict(torch.load(f, map_location=torch.device('cpu')))
+            return model
 
     @property
     def config(self):
@@ -488,6 +503,23 @@ class EntitiesAsExperts(Module):
             "hidden_size": self._config.hidden_size
         }
 
+    def generate_dummy_input(self):
+
+        return {
+            "input_ids": torch.tensor([103] * 512, device=DEVICE),
+            "output_ids": torch.tensor([0] * 512, device=DEVICE),
+            "attention_mask": torch.ones((512,), device=DEVICE),
+            "entity_inputs": None,
+            "entity_outputs": None,
+            "mention_boundaries": None
+        }
+
+        
+class EaEForQuestionAnsweringOutput(NamedTuple):
+    start_logits: torch.Tensor
+    end_logits: torch.Tensor
+    # 0: possible, 1: impossible.
+    impossible_logits: Optional[torch.Tensor] 
 
 class EaEForQuestionAnswering(Module):
     """
@@ -504,6 +536,10 @@ class EaEForQuestionAnswering(Module):
         self.eae = eae
         self.eae.training = False
         self.qa_outputs = Linear(eae.config["hidden_size"], 2)
+
+        # I could not find enough information on how this works
+        self.impossible_outputs = Linear(eae.config["hidden_size"] * 512, 2)
+        self.impossible_outputs_loss_fct = CrossEntropyLoss()
         self.config = eae.config
 
         # Freeze the entity memory
@@ -517,6 +553,7 @@ class EaEForQuestionAnswering(Module):
         token_type_ids: torch.Tensor,
         start_positions: Optional[torch.Tensor],
         end_positions: Optional[torch.Tensor],
+        is_possible: Optional[torch.Tensor]
     ) -> Tuple[Optional[torch.Tensor], torch.Tensor, torch.Tensor]:
         """
         :param input_ids the input ids
@@ -524,17 +561,22 @@ class EaEForQuestionAnswering(Module):
         :param token_type_ids to distinguish between context and question
         :param start_positions the target start positions
         :param end_positions the target end positions
+        :param is_possible a tensor of booleans that tells if the question can be answered.
 
         Everything else will be ignored.
 
-        :returns a triple loss, start_logits, end_logits
+        :returns a triple loss, start_logits, end_logits, is_answerable
         """
 
         # Copycat from BertForQuestionAnswering.forward()
         # Basically a logit on 2 terms with appropriate clamping
-        _, hidden_states, *__ = self.eae(
-            input_ids, attention_mask, token_type_ids=token_type_ids)
-        logits = self.qa_outputs(hidden_states.last_hidden_state)
+        _, outputs = self.eae(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids
+        )
+
+        logits = self.qa_outputs(outputs.bert_output.last_hidden_state)
         start_logits, end_logits = logits.split(1, dim=-1)
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
@@ -554,6 +596,15 @@ class EaEForQuestionAnswering(Module):
             loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
             start_loss = loss_fct(start_logits, start_positions)
             end_loss = loss_fct(end_logits, end_positions)
-            total_loss = (start_loss + end_loss) / 2
 
-        return total_loss, start_logits, end_logits
+            if is_possible is not None:
+                possible_logits = self.impossible_outputs(outputs.bert_output.last_hidden_state)
+                possible_loss = self.impossible_outputs_loss_fct(possible_logits, is_possible)
+
+                total_loss = (start_loss + end_loss + possible_loss) / 3
+
+                return total_loss, EaEForQuestionAnsweringOutput(
+                    start_logits, end_logits, possible_logits
+                )
+
+        return total_loss, EaEForQuestionAnsweringOutput(start_logits, end_logits)

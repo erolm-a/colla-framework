@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use tokenizers::models::wordpiece::WordPiece;
 use tokenizers::normalizers::bert::BertNormalizer;
 use tokenizers::pre_tokenizers::bert::BertPreTokenizer;
+use tokenizers::processors::bert::BertProcessing;
 use tokenizers::tokenizer::{EncodeInput, Tokenizer};
 
 use pyo3::exceptions;
@@ -47,6 +48,8 @@ use memmap::{Mmap};
 struct PageFormat {
     // a page identifier
     id: u32,
+
+    title: String, // TODO: find some usage for this field.
     // the actual text to tokenize
     text: String,
     // the links as byte spans.
@@ -321,7 +324,10 @@ fn tokenize_from_iterator_helper(
     // Make lowercase, ignore the chinese character problem
     tokenizer.with_normalizer(Box::new(BertNormalizer::new(true, false, true, true)));
     tokenizer.with_pre_tokenizer(Box::new(BertPreTokenizer));
-
+    tokenizer.with_post_processor(Box::new(BertProcessing::new(
+        ("[SEP]".to_owned(), 103),
+        ("[CLS]".to_owned(), 102))
+    ));
 
     // the number of articles to write at a time
     const BUFFER_SIZE : usize = 500;

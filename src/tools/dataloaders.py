@@ -9,7 +9,7 @@ import itertools
 import math
 import os
 import pickle
-from typing import List, Tuple, Dict, Sequence
+from typing import List, Tuple, Dict, Sequence, Optional
 
 from trec_car import read_data
 from trec_car.read_data import (AnnotationsFile, Page, Para,
@@ -30,7 +30,6 @@ from keras.preprocessing.sequence import pad_sequences
 from .dumps import get_filename_path
 from .vocabs import load_tokenizer
 
-
 def b2i(number_as_bytes: bytes):
     """
     Convert bytes to ints
@@ -38,7 +37,7 @@ def b2i(number_as_bytes: bytes):
     return int.from_bytes(number_as_bytes, "big")
 
 
-PageFormat = namedtuple("PageFormat", ["id", "text", "link_mentions"])
+PageFormat = namedtuple("PageFormat", ["id", "title", "text", "link_mentions"])
 
 
 class WikipediaCBOR(Dataset):
@@ -317,7 +316,7 @@ class WikipediaCBOR(Dataset):
         for skel in page.skeleton:
             visit_section(skel)
 
-        return PageFormat(id, page_content.getvalue(), links)
+        return PageFormat(id, page.page_name, page_content.getvalue(), links)
 
     def preprocess(self, limit: int):
         """
@@ -463,17 +462,22 @@ class SQuADDataloader():
     # Fancy getitem to work with samplers
 
     class SquadDataset(Dataset):
-        def __init__(self, dataset):
+        def __init__(
+            self,
+            dataset: Dataset,
+            custom_len: Optional[int] = None
+        ):
             self.dataset = dataset
+            self.length = custom_len if custom_len else len(self.dataset)
         
         def __len__(self):
-            return len(self.dataset)
+            return self.length
         
         def __getitem__(self, idx):
             if type(idx) == list or type(idx) == torch.tensor:
                 return [self.dataset[i] for i in idx]
             else:
-                # TODO: this is very fragile
+                # FIXME: this is very fragile
                 if type(idx) == np.int64:
                     idx = idx.item()
                 return self.dataset[idx]
@@ -484,6 +488,9 @@ class SQuADDataloader():
 
         :param block_size The model's block size. We drop questions that do not fit the model.
         """
+
+        # TODO: Use Transformer's interface for the tokenizer rather than the crude one
+        # TODO: Deprecate vocabs.py
         self.tokenizer = load_tokenizer('bert-base-uncased')
         self.dataset = datasets.load_dataset("squad")
 
@@ -537,17 +544,26 @@ class SQuADDataloader():
                     'answer_end': answer_end_idx}
 
         self.tokenized_dataset = self.dataset.map(encode, batched=True)
-        #self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'token_type_ids',
-        #                                                         'attention_mask', 'answer_start',
-        #                                                         'answer_end'])
 
-    @property
-    def train_dataset(self):
-        return SQuADDataloader.SquadDataset(self.tokenized_dataset["train"])
+        # Ready-to-use datasets, compatible with samplers if needed.
+        self.train_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["train"]
+        )
+        self.dev_train_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["train"], int(len(self.train_dataset)*0.01)
+        )
+        self.validation_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["validation"]
+        )
 
-    @property
-    def validation_dataset(self):
-        return SQuADDataloader.SquadDataset(self.tokenized_dataset["validation"])
+        self.validation_dev_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["validation"],
+            int(len(self.validation_dataset))
+        )
+
+        self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'attention_mask', 'token_type_ids',
+                                                                 'answer_start', 'answer_end'])
+
 
     def reconstruct_sentences(
                              self,

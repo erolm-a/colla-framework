@@ -3,143 +3,203 @@ import argparse
 
 import datasets
 import numpy as np
-import torch
 from torch.utils.data import DataLoader
-from transformers import BertForMaskedLM, BertForTokenClassification, BertForQuestionAnswering
 
 import wandb
 
 from tools.dataloaders import SQuADDataloader
 
-from models import EaEForQuestionAnswering, EntitiesAsExperts
-from models.training import train_model, get_optimizer, get_schedule, MetricWrapper, save_models
-from models import EntitiesAsExperts, EaEForQuestionAnswering
+from models import EntitiesAsExperts, EaEForQuestionAnswering, EntitiesAsExpertsOutputs, EaEForQuestionAnsweringOutput
 from models.device import get_available_device
 
-class BertQAWrapper(BertForQuestionAnswering):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
-    def forward(self, *args, **kwargs):
-        result = super().forward(*args, **kwargs)
-        return result.loss, result.start_logits, result.end_logits
+#import math
+from typing import List, Optional
 
-def parse_batch(batch):
-    input_ids = torch.tensor(batch['input_ids'])
-    attention_mask = torch.FloatTensor(batch['attention_mask'])
-    token_type_ids = torch.tensor(batch['token_type_ids'])
-    start = torch.tensor(batch['answer_start'])
-    end = torch.tensor(batch['answer_end'])
-    
-    return (("input_ids", "attention_mask", "token_type_ids", "start_positions", "end_positions"),
-            (input_ids, attention_mask, token_type_ids, start, end),
-            (batch,))
+import pprint
+
+import torch
+from torch.utils.data import DataLoader, SubsetRandomSampler
+import tqdm
+from transformers import AutoTokenizer
+
+from models.training import (train_model, get_optimizer, get_schedule,
+                            MetricWrapper, ModelTrainer, save_models)
+
+import wandb
+
+
+class SquadModelTrainer(ModelTrainer):
+    @staticmethod
+    def load_from_dataloader(batch):
+        return tuple(batch), tuple()
 
 class SQuADMetric(MetricWrapper):
-    def __init__(self, squad_dataset: SQuADDataloader):
-        self.squad_dataset = squad_dataset
+    def __init__(self,
+        dataloader: DataLoader,
+        enable_wandb=False,
+        enable_example_wandb=False
+    ):
+        super().__init__(dataloader, enable_wandb)
+        self.enable_example_wandb = enable_example_wandb
         self.reset()
     
-    def reset(self):
-        self.squad_metric = datasets.load_metric('squad')
+    def reset(self, is_validation: bool):
+        super().reset(is_validation)
         self.loss = 0.0
+        self.squad_metric = datasets.load_metric('squad')
         self.n = 0
     
-    def add_batch(self, inputs, outputs, loss: float):
-        self.loss += loss
-        self.n += len(inputs[0][0])
-        
-        batch_input = inputs[-1]
+    def add_batch(
+        self,
+        inputs: List[torch.Tensor],
+        outputs: EaEForQuestionAnsweringOutput,
+        loss: float
+    ):
 
-        # outputs = total_loss, answer_start_logits, answer_end_logits
-        answer_start_logits = outputs[1].detach().cpu()
-        answer_end_logits = outputs[1].detach().cpu()
+        with torch.no_grad():
+            self.loss += loss
+            self.n += len(inputs[0][0])
 
-        answer_starts = torch.argmax(answer_start_logits, 1).tolist()
-        answer_ends = torch.argmax(answer_end_logits, 1).tolist()
+            batch_input = inputs[-1]
 
-        input_ids = inputs[0].detach().cpu().tolist()
+            # outputs = total_loss, answer_start_logits, answer_end_logits
+            answer_start_logits = outputs[1].detach().cpu()
+            answer_end_logits = outputs[1].detach().cpu()
 
-        prediction_texts = self.squad_dataset.reconstruct_sentences(input_ids, answer_starts, answer_ends)
+            answer_starts = torch.argmax(answer_start_logits, 1).tolist()
+            answer_ends = torch.argmax(answer_end_logits, 1).tolist()
 
-        predictions = [{
-            "id": id,
-            "prediction_text": prediction_text,
-        } for id, prediction_text in zip(batch_input["id"], prediction_texts)]
+            input_ids = inputs[0].detach().cpu().tolist()
+
+            prediction_texts = self.squad_dataset.reconstruct_sentences(input_ids, answer_starts, answer_ends)
+
+            predictions = [{
+                "id": id,
+                "prediction_text": prediction_text,
+            } for id, prediction_text in zip(batch_input["id"], prediction_texts)]
 
 
-        references = [{
-            "id": id,
-            "answers": answers
-        } for id, answers in zip(batch_input["id"], batch_input['answers'])]
+            references = [{
+                "id": id,
+                "answers": answers
+            } for id, answers in zip(batch_input["id"], batch_input['answers'])]
 
-        self.squad_metric.add_batch(predictions=predictions, references=references)
+            self.squad_metric.add_batch(predictions=predictions, references=references)
 
     # return validation loss
     def compute(self, epoch: int) -> float:
+
+        total_length = self.dataloader_length * self.dataloader.batch_size
+        avg_loss = self.loss / total_length
+        prefix = "val_" if self.is_validation else "test_"
+
         metric_loss = self.squad_metric.compute()
-        wandb.log({'exact_match': metric_loss['exact_match'],
-                     'epoch': epoch,
-                     'f1': metric_loss['f1'],
-                     'val_loss': self.loss / self.n })
+
+        payload = {f'{prefix}exact_match': metric_loss['exact_match'],
+                   f'{prefix}f1': metric_loss['f1'],
+                   f'{prefix}loss': avg_loss,
+                   'epoch': epoch}
+        if self.enable_wandb:
+            wandb.log(payload)
+        else:
+            pprint.pprint(payload)
+
+        return avg_loss
+
+NUM_WORKERS = 16
+ENABLE_WANDB = True
+
+def get_dataloaders(
+    squad_dataset: SQuADDataloader,
+    batch_size: int,
+    is_dev: bool
+):
+
+    squad_training_dataset = getattr(squad_dataset,
+        f"train{'_dev' if is_dev else ''}_dataset")
+    squad_test_dataset = getattr(squad_dataset,
+        f"validation{'_dev' if is_dev else ''}_dataset")
 
 
+    # Reserve 1% for validation
+    squad_validation_length = int(len(squad_training_dataset) * 0.01)
+    squad_training_length = len(squad_training_dataset) - squad_validation_length
+ 
+    squad_training_dataset, squad_validation_dataset = random_split(
+        squad_training_dataset,
+        [squad_training_length, squad_validation_length],
+        generator=torch.Generator().manual_seed(42)
+    )
 
-def main(run_id: str):
-    np.random.seed(42)
+    squad_test_dataset = squad_dataset.validation_dataset
 
-    squad_dataset = SQuADDataloader()
-
+    """
     def squad_collate_fn(rows):
         keys = rows[0].keys()
         return {key: [row[key] for row in rows] for key in keys}
+    """
 
-    # TODO: this causes a Type Error as it returns a None. Why is that?
-    squad_train_dataset = squad_dataset.dev_dataset if wandb.config.squad_is_dev else squad_dataset.train_dataset
-    squad_train_dataloader = DataLoader(squad_train_dataset,
-                                        batch_size=wandb.config.squad_batch_size,
-                                        collate_fn=squad_collate_fn,
-                                        num_workers=8)
+    return [DataLoader(dataset, batch_size=batch_size, num_workers=NUM_WORKERS)
+            for dataset in (squad_training_dataset, squad_validation_dataset, squad_test_dataset)]
 
-
-    squad_validation_dataset = squad_dataset.validation_dataset
-    squad_validation_dataloader = DataLoader(squad_validation_dataset,
-                                            batch_size=wandb.config.squad_batch_size,
-                                            collate_fn=squad_collate_fn,
-                                            num_workers=8)
+def main(variant: str, run_id: Optional[str]):
+    np.random.seed(42)
 
 
-    pretraining_model = EntitiesAsExperts.from_pretrained("pretraining_eae_one_epoch", run_id)
+    if ENABLE_WANDB and run_id is not None:
+        wandb.init(project="EaESquad", config="configs/eae_squad.yaml")
+        batch_size = wandb.config.batch_size
+        is_dev = wandb.config.is_dev
+        gradient_accum_size = wandb.config.gradient_accum_size
+        learning_rate = wandb.config.learning_rate
+        full_finetuning = wandb.config.full_finetuning
+        epochs = wandb.config.pretraining_epochs
+        pretraining_model = EntitiesAsExperts.from_pretrained("pretrained_eae_100k", run_id)
+    else:
+        batch_size = 1
+        gradient_accum_size = 1
+        is_dev = True
+        learning_rate = 1e-4
+        full_finetuning = False
+        epochs = 1
+        pretraining_model = EntitiesAsExperts.from_pretrained_offline("pretraining_eae_100k")
 
-    DEVICE = get_available_device()
-    # TODO: make sure that while training a model gets moved to the DEVICE
-    model_qa = EaEForQuestionAnswering(pretraining_model).to(DEVICE)
-    # model_qa = BertQAWrapper.from_pretrained("bert-base-uncased").to(DEVICE)
+
+    squad_dataset = SQuADDataloader()
+    squad_train_dataloader, squad_validation_dataloader, squad_test_dataloader = \
+        get_dataloaders(squad_dataset, batch_size, is_dev)
+
+    squad_model = EaEForQuestionAnswering(pretraining_model)
+
+    metric = SQuADMetric(squad_validation_dataloader, enable_wandb=ENABLE_WANDB)
+    model_trainer = SquadModelTrainer(squad_model, watch_wandb=ENABLE_WANDB, enable_wandb=ENABLE_WANDB)
+
     
-    # wandb.watch(model_qa)
+    optimizer = get_optimizer(squad_model,
+                                learning_rate=learning_rate,
+                                full_finetuning=full_finetuning)
+    scheduler = get_schedule(epochs, optimizer, squad_train_dataloader)
 
-    my_metric = SQuADMetric(squad_dataset)
-
-    squad_epochs = wandb.config.squad_epochs
-
-    optimizer = get_optimizer(model_qa, learning_rate=float(wandb.config.squad_learning_rate))
-    scheduler = get_schedule(squad_epochs, optimizer, squad_train_dataloader)
-
-    train_model(model_qa, squad_train_dataloader, squad_validation_dataloader,
-                    parse_batch, optimizer, scheduler, squad_epochs, my_metric,
-                    gradient_accumulation_factor=wandb.config.squad_gradient_accum_size)
+    train_model(model_trainer, squad_train_dataloader, squad_validation_dataloader,
+                squad_test_dataloader, optimizer, scheduler, epochs, metric,
+                validation_frequency= 500 * batch_size,
+                gradient_accumulation_factor=gradient_accum_size)
 
 
-    save_models(squad_qa_5epoch_dev=model_qa)
+
+    save_models(squad_qa_5epoch_dev=)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(  
         description='Perform evaluation on SQuAD')
     parser.add_argument(
+        '--variant', type=str, required=False,
+        help='The W&B eae model checkpoint variant.')
+    parser.add_argument(
         '--run_id', type=str, required=True,
         help='The W&B run identifier of the EaE checkpoint.')
 
-    args = parser.parse_args()  
-
-    main(args.run_id)
+    args = parser.parse_args() 
+    main(args.variant, args.run_id)

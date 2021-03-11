@@ -19,13 +19,11 @@ from tools.dataloaders import WikipediaCBOR
 
 from models import EntitiesAsExperts, EntitiesAsExpertsOutputs
 from models.training import (train_model, get_optimizer, get_schedule,
-                            MetricWrapper, ModelTrainer, save_models)
+                            MetricWrapper, ModelTrainer)
 
 # TODO: can we avoid recomputing the cross-entropy loss again?
 from torch.nn import CrossEntropyLoss
 import wandb
-
-from models.device import get_available_device
 
 NUM_WORKERS = 16
 
@@ -144,7 +142,7 @@ class PretrainingMetric(MetricWrapper):
                             f'<b style="color: green">{ground_tok}</b>')
                         predicted_html.write(
                             f'<b style="color: green">{predicted_tok}</b>')
-                else:
+                elif masked_tokens[idx] != self.tokenizer.pad_token_id:
                     # We do not care about non-mask tokens. For what we know,
                     # the model may predict utter rubbish and we won't care except
                     # for the masked tokens
@@ -267,7 +265,7 @@ def get_dataloaders(wikipedia_cbor: WikipediaCBOR, batch_size: int, is_dev: bool
 
     return (wiki_train_dataloader, wiki_validation_dataloader, wiki_test_dataloader)
 
-ENABLE_WANDB = True
+ENABLE_WANDB = False
 def main():
     np.random.seed(42)
 
@@ -322,16 +320,14 @@ def main():
     scheduler = get_schedule(epochs, optimizer, wiki_train_dataloader)
 
     metric = PretrainingMetric(wiki_validation_dataloader, enable_wandb=ENABLE_WANDB)
-    model_trainer = PretrainingModelTrainer(pretraining_model, watch_wandb=ENABLE_WANDB, enable_wandb=ENABLE_WANDB)
+    model_trainer = PretrainingModelTrainer(pretraining_model, "pretraining_10k", watch_wandb=ENABLE_WANDB, enable_wandb=ENABLE_WANDB)
 
     
     train_model(model_trainer, wiki_train_dataloader, wiki_validation_dataloader,
                 wiki_test_dataloader, optimizer, scheduler, epochs, metric,
                 validation_frequency= 500 * batch_size,
-                gradient_accumulation_factor=gradient_accum_size)
-
-
-    save_models(pretraining_eae_100k=pretraining_model)
+                gradient_accumulation_factor=gradient_accum_size,
+                checkpoint_frequency=10)
     
 if __name__ == "__main__":
     main()
