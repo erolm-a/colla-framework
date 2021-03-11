@@ -38,7 +38,7 @@ class MetricWrapper(ABC):
         1. reset()
         2. add_batch()
         3. compute()
-    
+
     This class provides a default implementation of a MetricWrapper which
     sends evaluation loss to W&B.
     """
@@ -59,7 +59,7 @@ class MetricWrapper(ABC):
         :param _inputs
         :param _outputs: a list of outputs from the model.
                The training loop is type-agnostic, but is known to return a list of return values
-               (or just a singleton). 
+               (or just a singleton).
         :param loss the loss of the model
         """
         pass
@@ -91,7 +91,7 @@ class TorchScriptDumpable(ABC):
 class ModelTrainer(ABC):
     """
     A wrapper on trainers that performs logging, example collection and other goodies.
-    
+
     Default methods are implemented, but callers should override according to the needs.
 
     At least, the caller must define load_from_dataloader.
@@ -116,6 +116,14 @@ class ModelTrainer(ABC):
         self.run_name = run_name
         self.model = model.to(DEVICE)
         self.model.train()
+
+
+        if enable_wandb:
+            # save everything we are going to write
+            wandb.save("*.json")
+            wandb.save("*.h5")
+            wandb.save("*.pt")
+            wandb.save("*.pth")
 
         if watch_wandb:
             wandb.watch(model)
@@ -143,7 +151,7 @@ class ModelTrainer(ABC):
         If training this method should return a list of tensors for training.
         Otherwise, this should return a pair of such tensors and other useful metric data.
         """
-        
+
 
     def step(self, batch, metric: MetricWrapper, is_validation=True) -> Optional[torch.Tensor]:
         """
@@ -198,7 +206,7 @@ class ModelTrainer(ABC):
             only be used for evaluation and/or visualization tasks (e.g. netron),
             NOT for finetuning and/or transfer learning. Extension format: "pt"
             When `network_format`= "pytorch" the model state will be saved.
-        
+
         :param model_name
         :param export if provided save the current file as a W&B artifact.
         """
@@ -218,11 +226,11 @@ class ModelTrainer(ABC):
 
         if network_format == "pytorch":
             torch.save(self.model.state_dict(), model_path)
-        
+
         elif network_format == "torchscript":
             assert isinstance(self.model, TorchScriptDumpable), \
                 "Torchscript exporting is only available when implementing TorchScriptDumpable"
-            traced = torch.jit.trace(self.model, self.model.generate_dummy_input)
+            traced = torch.jit.trace(self.model, self.model.generate_dummy_input())
             traced.save(model_path)
 
         config = getattr(self.model, "config", None)
@@ -335,13 +343,13 @@ def train_model(
             pending_updates = False
 
         metric.reset(False)
-        
+
         if testing_dataloader:
             with torch.no_grad():
                 model_trainer.training = False
                 for test_batch in tqdm(testing_dataloader):
                     model_trainer.step(test_batch, metric, is_validation=False)
-                
+
                 metric.compute(epoch)
 
         # TODO: should we also serialise optimizer and scheduler?

@@ -223,7 +223,7 @@ class EntityMemory(Module):
             # Gradient-wise this should not change anything
             loss = self.loss(
                 alpha_log, entities_output[positions[0], positions[1]])
-            
+
         if self.training:
             # shape: B x d_ent
             picked_entity = self.E(alpha)
@@ -477,12 +477,12 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
                                          map_location=torch.device('cpu')))
 
         return model
-    
+
     @staticmethod
     def from_pretrained_offline(config: str):
         with wrap_open(f"eae/{config}.json") as f:
             config_dict = json.load(f)
-        
+
         with wrap_open(f"eae/{config}.h5", "rb") as f:
             model = EntitiesAsExperts(**config_dict)
             model.load_state_dict(torch.load(f, map_location=torch.device('cpu')))
@@ -504,22 +504,16 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
         }
 
     def generate_dummy_input(self):
+        return (torch.LongTensor([[103] * 512], device=DEVICE),
+                torch.zeros((1, 512), device=DEVICE, dtype=torch.long),
+                torch.ones((1, 512), device=DEVICE, dtype=torch.long))
 
-        return {
-            "input_ids": torch.tensor([103] * 512, device=DEVICE),
-            "output_ids": torch.tensor([0] * 512, device=DEVICE),
-            "attention_mask": torch.ones((512,), device=DEVICE),
-            "entity_inputs": None,
-            "entity_outputs": None,
-            "mention_boundaries": None
-        }
 
-        
 class EaEForQuestionAnsweringOutput(NamedTuple):
     start_logits: torch.Tensor
     end_logits: torch.Tensor
     # 0: possible, 1: impossible.
-    impossible_logits: Optional[torch.Tensor] 
+    impossible_logits: Optional[torch.Tensor]
 
 class EaEForQuestionAnswering(Module):
     """

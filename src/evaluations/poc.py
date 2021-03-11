@@ -82,10 +82,12 @@ class PretrainingMetric(MetricWrapper):
             token_logits = token_logits.cpu()
             # entity_logits = entity_logits.cpu()
 
-            self.token_perplexity += float(
-                self.loss_fcn(token_logits[token_mask_positions],
-                              correct_tokens))
-            
+            # If no masks are detected the loss function yields a NaN.
+            if token_mask_positions[0] > 0:
+                self.token_perplexity += float(
+                    self.loss_fcn(token_logits[token_mask_positions],
+                                  correct_tokens))
+
             # TODO: masked entities should use a different id than 0
             link_mask_positions = torch.nonzero((links > 0) & (masked_links == 0), as_tuple=True)
             self.num_mask_links += len(link_mask_positions[0])
@@ -95,7 +97,7 @@ class PretrainingMetric(MetricWrapper):
             if self.is_validation:
                 self.log_example(input_ids, output_ids, token_outputs)
 
-            
+
             # TODO: might be interesting to add an attention visualization graph
             # possible ideas: BertViz
 
@@ -185,7 +187,8 @@ class PretrainingMetric(MetricWrapper):
         entity_accuracy = self.correctly_predicted_links / self.num_mask_links \
             if self.num_mask_links else 0.0
 
-        token_perplexity = math.exp(self.token_perplexity / total_length)
+        token_perplexity = math.exp(self.token_perplexity / self.num_mask_labels) \
+            if self.num_mask_labels else 0.0
 
         payload = {
                 f"{prefix}loss": avg_loss,
@@ -208,12 +211,12 @@ class PretrainingMetric(MetricWrapper):
                         table.add_data(*map(wandb.Html, record))
 
                     art.add(table, "html")
-                    
+
                     wandb.log_artifact(art)
         else:
             print("===========")
             pprint.pprint(payload)
-        
+
         print(self.expected_sentences)
         print(self.predicted_sentences)
 
@@ -238,7 +241,7 @@ def get_dataloaders(wikipedia_cbor: WikipediaCBOR, batch_size: int, is_dev: bool
         wiki_dev_size = int(0.01*len(wikipedia_cbor))
     else:
         wiki_dev_size = len(wikipedia_cbor)
- 
+
     wiki_dev_indices = np.random.choice(len(wikipedia_cbor), size=wiki_dev_size)
 
     # Use 80 % of Wikipedia for training, 19% for testing, 1% for validation
@@ -265,7 +268,7 @@ def get_dataloaders(wikipedia_cbor: WikipediaCBOR, batch_size: int, is_dev: bool
 
     return (wiki_train_dataloader, wiki_validation_dataloader, wiki_test_dataloader)
 
-ENABLE_WANDB = False
+ENABLE_WANDB = True
 def main():
     np.random.seed(42)
 
@@ -322,12 +325,17 @@ def main():
     metric = PretrainingMetric(wiki_validation_dataloader, enable_wandb=ENABLE_WANDB)
     model_trainer = PretrainingModelTrainer(pretraining_model, "pretraining_10k", watch_wandb=ENABLE_WANDB, enable_wandb=ENABLE_WANDB)
 
-    
+
     train_model(model_trainer, wiki_train_dataloader, wiki_validation_dataloader,
                 wiki_test_dataloader, optimizer, scheduler, epochs, metric,
                 validation_frequency= 500 * batch_size,
                 gradient_accumulation_factor=gradient_accum_size,
                 checkpoint_frequency=10)
-    
+
+
+    # ISSUE: can't run torchscript tracing on heterogeneous data structures (e.g. classes)
+    # ... but there should be none, right? What about Bert's default stuff?
+    # model_trainer.save_models(model_trainer.run_name + "_torchscript_test", network_format="torchscript")
+
 if __name__ == "__main__":
     main()
