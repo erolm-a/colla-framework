@@ -356,7 +356,7 @@ def train_model(
         model_trainer.save_models(model_trainer.run_name + f"_checkpoint_epoch_{epoch}")
     model_trainer.training = False
 
-    model_trainer.save_models(model_trainer.run_name, export=True)
+    model_trainer.save_models(model_trainer.run_name, export="final_model")
 
 
 def get_optimizer(model: Module, learning_rate: float, full_finetuning=False):
