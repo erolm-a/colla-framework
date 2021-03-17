@@ -5,11 +5,13 @@ import bisect
 from collections import defaultdict, namedtuple
 from copy import deepcopy
 from io import StringIO
+import re
+
 import itertools
 import math
 import os
 import pickle
-from typing import List, Tuple, Dict, Sequence, Optional
+from typing import List, Tuple, Dict, Sequence, Optional, NamedTuple, NewType
 
 from trec_car import read_data
 from trec_car.read_data import (AnnotationsFile, Page, Para,
@@ -22,6 +24,7 @@ import tokenizer_cereal
 import numpy as np
 
 import datasets
+from tokenizers.pre_tokenizers import Whitespace # we'll need it...
 import torch
 from torch.utils.data import Dataset
 import tqdm
@@ -37,7 +40,22 @@ def b2i(number_as_bytes: bytes):
     return int.from_bytes(number_as_bytes, "big")
 
 
-PageFormat = namedtuple("PageFormat", ["id", "title", "text", "link_mentions"])
+# Token and token lists returned from a Whitespace tokenization
+Token = NewType("Token", Tuple[str, Tuple[int, int]])
+TokenizedText = NewType("TokenizedText", List[Token])
+Link = NewType("Link", Tuple[int, int, int])
+
+class PageFormat(NamedTuple):
+    id: int
+    title: str
+    text: str
+    link_mentions: List[Link]
+
+class PageFormatNew(NamedTuple):
+    id: int
+    title: str
+    tokenized_text: TokenizedText
+    link_mentions: List[Link]
 
 
 class WikipediaCBOR(Dataset):
@@ -53,16 +71,17 @@ class WikipediaCBOR(Dataset):
     application-ready torch dataloader to be used inside BERT.
     """
 
-    def __init__(self,
-                 cbor_path: str,
-                 partition_path: str,
-                 cutoff_frequency=0.03,
-                 page_lim=-1,
-                 token_length=512,
-                 clean_cache=False,
-                 repreprocess=False,
-                 recount=False,
-                 ):
+    def __init__(
+        self,
+        cbor_path: str,
+        partition_path: str,
+        cutoff_frequency=0.03,
+        page_lim=-1,
+        token_length=512,
+        clean_cache=False,
+        repreprocess=False,
+        recount=False,
+    ):
         """
         :param cbor_path the relative path of the wikipedia cbor export
         :param partition_path the relative path of the partitions to use
@@ -317,6 +336,98 @@ class WikipediaCBOR(Dataset):
             visit_section(skel)
 
         return PageFormat(id, page.page_name, page_content.getvalue(), links)
+
+    def preprocess_page_new(self, enumerated_page: Tuple[int, Page]):
+        """
+        Transform a list of pages into a flattened representation that can
+        then be easily (de)serialized.
+        """
+
+        id, page = enumerated_page
+
+        # For the sake of easy link spans they are byte oriented to make
+        # it easier for the rust std
+        # page_content = StringIO()
+        split_content = []
+        links = []
+        running_length_count = 0
+
+        splitter = Whitespace()
+        # splitter = 0
+
+        # Encode a link. Cast to padding if the link was not "common".
+        # Call this method only after preprocessing has been done!
+        def encode_link(link):
+            return self.key_encoder.get(link, 0)
+
+        # People say pattern matching is overrated.
+        # I beg to differ.
+        # (It's also true that a tree structure for tokenization makes
+        # absolutely no sense - but I don't get to decide things apparently).
+        def handle_section(skel: Section):
+            for subskel in skel.children:
+                visit_section(subskel)
+
+        def handle_list(skel: ParaList):
+            visit_section(skel.body)
+
+        def handle_para(skel: Para):
+            paragraph = skel.paragraph
+            bodies = paragraph.bodies
+
+            for body in bodies:
+                visit_section(body)
+
+        def handle_paratext(body: ParaBody):
+            nonlocal running_length_count
+            split_body = splitter.pre_tokenize_str(body.get_text())
+
+            running_prefix = running_length_count + int(running_length_count != 0)
+            split_body = [(text, (begin_offset + running_prefix,
+                                  end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+
+            split_content.extend(split_body)
+            running_length_count += split_body[-1][1][1] if len(split_body) > 0 else 0
+
+        def handle_paralink(body: ParaLink):
+            nonlocal running_length_count
+            encoded_link = encode_link(body.page)
+            split_body = splitter.pre_tokenize_str(body.get_text())
+
+            running_prefix = running_length_count + int(running_length_count != 0)
+            split_body = [(text, (begin_offset + running_prefix,
+                                  end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+
+            split_content.extend(split_body)
+
+            if len(split_body) > 0:
+                start_byte_span = split_body[0][1][0]
+                end_byte_span = split_body[-1][1][1] - 1 if len(split_body) > 0 else 0
+                links.append((encoded_link, start_byte_span, end_byte_span))
+                running_length_count = end_byte_span
+
+        def nothing():
+            return lambda body: None
+
+        handler = defaultdict(nothing, {Section: handle_section,
+                                        Para: handle_para,
+                                        List: handle_list,
+                                        ParaLink: handle_paralink,
+                                        ParaText: handle_paratext})
+
+        def visit_section(skel):
+            # Recur on the sections
+            handler[type(skel)](skel)
+
+        for skel in page.skeleton:
+            visit_section(skel)
+
+        return id, page.page_name, split_content, links
+
+        # return PageFormat(id, page.page_name, page_content.getvalue(), links)
+
+
+    
 
     def preprocess(self, limit: int):
         """
