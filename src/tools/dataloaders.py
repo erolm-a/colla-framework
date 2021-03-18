@@ -11,6 +11,7 @@ import itertools
 import math
 import os
 import pickle
+from heapq import merge
 from typing import List, Tuple, Dict, Sequence, Optional, NamedTuple, NewType
 
 from trec_car import read_data
@@ -30,8 +31,9 @@ from torch.utils.data import Dataset
 import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
-from .dumps import get_filename_path
-from .vocabs import load_tokenizer
+from tools.dumps import get_filename_path
+from tools.vocabs import load_tokenizer
+from tools.strings import MyRecordTrie
 
 def b2i(number_as_bytes: bytes):
     """
@@ -266,7 +268,10 @@ class WikipediaCBOR(Dataset):
                     output_entities[i] = 0 # TODO allocate a special [MASK] token for links.
         return output_tokens, output_entities, output_bio
 
-    def preprocess_page(self, enumerated_page: Tuple[int, Page]):
+    def preprocess_page(
+        self,
+        enumerated_page: Tuple[int, Page]
+    ):
         """
         Transform a list of pages into a flattened representation that can
         then be easily (de)serialized.
@@ -278,7 +283,7 @@ class WikipediaCBOR(Dataset):
         # it easier for the rust std
         # page_content = StringIO()
         split_content = []
-        # orig_page_content = StringIO()
+        orig_page_content = StringIO()
         prev_page_length = 0
         prev_body = ""
         links = []
@@ -324,6 +329,8 @@ class WikipediaCBOR(Dataset):
             if len(split_content) > 0:
                 running_prefix = prev_page_length #split_content[-1][1][1]
 
+            orig_page_content.write(cur_body)
+
             #print(f"After skipping: {orig_page_content.getvalue()[running_prefix:]}")
 
             split_body = [(text, (begin_offset + running_prefix,
@@ -350,7 +357,7 @@ class WikipediaCBOR(Dataset):
             if len(split_content) > 0:
                 running_prefix = prev_page_length
 
-            #orig_page_content.write(cur_body)
+            orig_page_content.write(cur_body)
  
             split_body = [(text, (begin_offset + running_prefix,
                                     end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
@@ -384,7 +391,87 @@ class WikipediaCBOR(Dataset):
         for skel in page.skeleton:
             visit_section(skel)
 
-        return PageFormat(id, page.page_name, split_content, links)
+        return orig_page_content.getvalue(), PageFormat(id, page.page_name, split_content, links)
+    
+    @staticmethod
+    def autolink(
+        page_id: int,
+        title: str,
+        text: str,
+        tokenized_text: TokenizedText,
+        links: List[Link]
+    ) -> List[Link]:
+        link_idx = 0
+
+        exact_mentions = {}
+
+        # TODO: deal with ambiguities...
+        exact_mentions[title] = page_id
+
+        #print(exact_mentions)
+
+        remapped_links = []
+        for link in links:
+            # revert the tokenization algorithm
+            start_byte = tokenized_text[link[1]][1][0]
+            end_byte = tokenized_text[link[2]-1][1][1]
+
+            #print(text[start_byte:end_byte])
+
+            exact_mentions[text[start_byte:end_byte]] = link[0]
+            remapped_links.append((link[0], start_byte, end_byte))
+        
+
+        #print(list(map(lambda x: (x[0], (x[1],)), exact_mentions.items())))
+
+        trie = MyRecordTrie(map(lambda x: (x[0], (x[1],)), exact_mentions.items()))
+
+        #print(trie.keys())
+
+        # print(trie.items())
+        patterns = sorted(trie.search_longest_patterns(tokenized_text), key=lambda x: x[1]) # sort by apparition
+
+
+        link = None
+        link_idx = 0
+        new_links = []
+        
+        for title, idx, new_link_id, _ in patterns:
+            
+            new_link = (new_link_id, idx, idx + len(title))
+            # print(title, new_link)
+
+            if link_idx < len(remapped_links):
+                link = remapped_links[link_idx]
+            
+            while link_idx < len(remapped_links) - 1 and idx > link[2]:
+                link_idx += 1
+                link = remapped_links[link_idx]
+                #print("Increasing")
+
+            if link_idx >= len(remapped_links):
+                link = None
+            
+            if link is None or idx < link[1]:
+                new_links.append(new_link)
+                #print(title, new_link)
+            else:
+                #print("Found existing link",  link)
+                #print("Compare with: ", new_link)
+                pass
+        
+        # print(f"The page has {len(remapped_links)} links by default")
+        # print("Added new ", len(new_links), "links")
+        return list(merge(remapped_links, new_links, key=lambda x: x[1]))
+
+    def preprocessing_pipeline(self, enumerated_page: Tuple[int, Page]):
+        text, page_output = self.preprocess_page(enumerated_page)
+        new_links = WikipediaCBOR.autolink(
+            page_output.id,page_output.title,
+            text, page_output.pretokenized_text,
+            page_output.link_mentions)
+        
+        return PageFormat(page_output.id, page_output.title, page_output.pretokenized_text, new_links)
 
     def preprocess(self, limit: int):
         """
@@ -397,7 +484,7 @@ class WikipediaCBOR(Dataset):
         with open(self.cbor_path, "rb") as cbor_fp:
             # TODO: revert to a function-based approach
             tokenizer = tokenizer_cereal.TokenizerCereal(self.rust_cereal_path,
-                                                         map(self.preprocess_page, enumerate(
+                                                         map(self.preprocessing_pipeline, enumerate(
                                                              read_data.iter_annotations(cbor_fp))),
                                                          limit)
 
