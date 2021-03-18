@@ -48,13 +48,8 @@ Link = NewType("Link", Tuple[int, int, int])
 class PageFormat(NamedTuple):
     id: int
     title: str
-    text: str
-    link_mentions: List[Link]
-
-class PageFormatNew(NamedTuple):
-    id: int
-    title: str
-    tokenized_text: TokenizedText
+    #text: str
+    pretokenized_text: TokenizedText
     link_mentions: List[Link]
 
 
@@ -271,73 +266,7 @@ class WikipediaCBOR(Dataset):
                     output_entities[i] = 0 # TODO allocate a special [MASK] token for links.
         return output_tokens, output_entities, output_bio
 
-    def preprocess_page(self, enumerated_page: Tuple[int, Page]) -> PageFormat:
-        """
-        Transform a list of pages into a flattened representation that can
-        then be easily (de)serialized.
-        """
-
-        id, page = enumerated_page
-
-        # For the sake of easy link spans they are byte oriented to make
-        # it easier for the rust std
-        page_content = StringIO()
-        links = []
-
-        # Encode a link. Cast to padding if the link was not "common".
-        # Call this method only after preprocessing has been done!
-        def encode_link(link):
-            #return self.key_restrictor.get(self.key_encoder.get(link, 0), 0)
-            return self.key_encoder.get(link, 0)
-
-        # People say pattern matching is overrated.
-        # I beg to differ.
-        # (It's also true that a tree structure for tokenization makes
-        # absolutely no sense - but I don't get to decide things apparently).
-        def handle_section(skel: Section):
-            for subskel in skel.children:
-                visit_section(subskel)
-
-        def handle_list(skel: ParaList):
-            visit_section(skel.body)
-
-        def handle_para(skel: Para):
-            paragraph = skel.paragraph
-            bodies = paragraph.bodies
-
-            for body in bodies:
-                visit_section(body)
-
-        def handle_paratext(body: ParaBody):
-            page_content.write(body.get_text())
-
-        def handle_paralink(body: ParaLink):
-            encoded_link = encode_link(body.page)
-            start_byte_span = page_content.tell()
-            end_byte_span = start_byte_span + len(body.get_text()) - 1
-            page_content.write(body.get_text())
-
-            links.append((encoded_link, start_byte_span, end_byte_span))
-
-        def nothing():
-            return lambda body: None
-
-        handler = defaultdict(nothing, {Section: handle_section,
-                                        Para: handle_para,
-                                        List: handle_list,
-                                        ParaLink: handle_paralink,
-                                        ParaText: handle_paratext})
-
-        def visit_section(skel):
-            # Recur on the sections
-            handler[type(skel)](skel)
-
-        for skel in page.skeleton:
-            visit_section(skel)
-
-        return PageFormat(id, page.page_name, page_content.getvalue(), links)
-
-    def preprocess_page_new(self, enumerated_page: Tuple[int, Page]):
+    def preprocess_page(self, enumerated_page: Tuple[int, Page]):
         """
         Transform a list of pages into a flattened representation that can
         then be easily (de)serialized.
@@ -349,8 +278,10 @@ class WikipediaCBOR(Dataset):
         # it easier for the rust std
         # page_content = StringIO()
         split_content = []
+        # orig_page_content = StringIO()
+        prev_page_length = 0
+        prev_body = ""
         links = []
-        running_length_count = 0
 
         splitter = Whitespace()
         # splitter = 0
@@ -358,6 +289,7 @@ class WikipediaCBOR(Dataset):
         # Encode a link. Cast to padding if the link was not "common".
         # Call this method only after preprocessing has been done!
         def encode_link(link):
+            #return self.key_encoder.get(link, 0)
             return self.key_encoder.get(link, 0)
 
         # People say pattern matching is overrated.
@@ -379,39 +311,69 @@ class WikipediaCBOR(Dataset):
                 visit_section(body)
 
         def handle_paratext(body: ParaBody):
-            nonlocal running_length_count
-            split_body = splitter.pre_tokenize_str(body.get_text())
+            nonlocal prev_page_length
+            nonlocal prev_body
+            cur_body = body.get_text()
 
-            running_prefix = running_length_count + int(running_length_count != 0)
+            split_body = splitter.pre_tokenize_str(cur_body)
+            #print('from handle_paratext: "' + body.get_text() + '"')
+
+            # take care of the space...
+            running_prefix = 0
+            current_page_length = prev_page_length + len(cur_body)
+            if len(split_content) > 0:
+                running_prefix = prev_page_length #split_content[-1][1][1]
+
+            #print(f"After skipping: {orig_page_content.getvalue()[running_prefix:]}")
+
             split_body = [(text, (begin_offset + running_prefix,
-                                  end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+                                    end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+
+            # print(split_body)
 
             split_content.extend(split_body)
-            running_length_count += split_body[-1][1][1] if len(split_body) > 0 else 0
+
+            prev_page_length = current_page_length
+            prev_body = body.get_text()
 
         def handle_paralink(body: ParaLink):
-            nonlocal running_length_count
+            nonlocal prev_body
+            nonlocal prev_page_length
             encoded_link = encode_link(body.page)
-            split_body = splitter.pre_tokenize_str(body.get_text())
+            cur_body = body.get_text()
 
-            running_prefix = running_length_count + int(running_length_count != 0)
+            split_body = splitter.pre_tokenize_str(cur_body)
+            #print('from handle_paralink: "' + body.get_text() + '"')
+
+            running_prefix = 0
+            current_page_length = prev_page_length + len(cur_body)
+            if len(split_content) > 0:
+                running_prefix = prev_page_length
+
+            #orig_page_content.write(cur_body)
+ 
             split_body = [(text, (begin_offset + running_prefix,
-                                  end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+                                    end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
 
             split_content.extend(split_body)
 
             if len(split_body) > 0:
-                start_byte_span = split_body[0][1][0]
-                end_byte_span = split_body[-1][1][1] - 1 if len(split_body) > 0 else 0
-                links.append((encoded_link, start_byte_span, end_byte_span))
-                running_length_count = end_byte_span
+                end_byte_span = split_body[-1][1][1] - 1
+                start_mention_idx = len(split_content) - len(split_body)
+                links.append((encoded_link, start_mention_idx, len(split_content)))
+
+            #for tok, (begin, end) in split_body:
+            #    assert tok == orig_page_content.getvalue()[begin:end], f"generated {orig_page_content.getvalue()[begin:end]} but expected {tok}"
+
+            prev_page_length = current_page_length
+            prev_body = body.get_text()
 
         def nothing():
             return lambda body: None
 
         handler = defaultdict(nothing, {Section: handle_section,
                                         Para: handle_para,
-                                        List: handle_list,
+                                        ParaList: handle_list,
                                         ParaLink: handle_paralink,
                                         ParaText: handle_paratext})
 
@@ -422,12 +384,7 @@ class WikipediaCBOR(Dataset):
         for skel in page.skeleton:
             visit_section(skel)
 
-        return id, page.page_name, split_content, links
-
-        # return PageFormat(id, page.page_name, page_content.getvalue(), links)
-
-
-    
+        return PageFormat(id, page.page_name, split_content, links)
 
     def preprocess(self, limit: int):
         """

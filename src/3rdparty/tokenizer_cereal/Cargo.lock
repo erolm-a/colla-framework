@@ -708,6 +708,7 @@ dependencies = [
  "memmap",
  "paste 1.0.4",
  "pyo3",
+ "rayon",
  "serde",
  "simple-error",
  "tokenizers",
