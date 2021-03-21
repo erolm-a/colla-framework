@@ -44,7 +44,7 @@ class PretrainingMetric(MetricWrapper):
         self.wikipedia_dataset = dataloader.dataset # type: WikipediaCBOR
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
         # for computing the token perplexity
-        self.loss_fcn = CrossEntropyLoss()
+        self.loss_fcn = CrossEntropyLoss(reduction='sum')
         self.enable_example_wandb = enable_example_wandb
 
     def add_batch(
@@ -83,7 +83,7 @@ class PretrainingMetric(MetricWrapper):
             # entity_logits = entity_logits.cpu()
 
             # If no masks are detected the loss function yields a NaN.
-            if token_mask_positions[0] > 0:
+            if len(token_mask_positions[0]) > 0:
                 self.token_perplexity += float(
                     self.loss_fcn(token_logits[token_mask_positions],
                                   correct_tokens))
@@ -131,25 +131,25 @@ class PretrainingMetric(MetricWrapper):
             for idx, (ground_tok, predicted_tok) in enumerate(
                 zip(ground_sentence, predicted_sentence)
             ):
-                if masked_tokens.dim() > 0 and masked_tok_idx < len(masked_tokens) \
-                        and idx == int(masked_tokens[masked_tok_idx]):
-                    masked_tok_idx += 1
-                    if predicted_sentence[idx] != ground_sentence[idx]:
-                        expected_html.write(
-                            f'<b style="color: red">{ground_tok}</b>')
-                        predicted_html.write(
-                            f'<b style="color: red">{predicted_tok}</b>')
-                    else:
-                        expected_html.write(
-                            f'<b style="color: green">{ground_tok}</b>')
-                        predicted_html.write(
-                            f'<b style="color: green">{predicted_tok}</b>')
-                elif masked_tokens[idx] != self.tokenizer.pad_token_id:
-                    # We do not care about non-mask tokens. For what we know,
-                    # the model may predict utter rubbish and we won't care except
-                    # for the masked tokens
-                    expected_html.write(ground_tok)
-                    predicted_html.write(ground_tok)
+                if masked_tokens.dim() > 0 and masked_tok_idx < len(masked_tokens):
+                    if idx == int(masked_tokens[masked_tok_idx]):
+                        masked_tok_idx += 1
+                        if predicted_sentence[idx] != ground_sentence[idx]:
+                            expected_html.write(
+                                f'<b style="color: red">{ground_tok}</b>')
+                            predicted_html.write(
+                                f'<b style="color: red">{predicted_tok}</b>')
+                        else:
+                            expected_html.write(
+                                f'<b style="color: green">{ground_tok}</b>')
+                            predicted_html.write(
+                                f'<b style="color: green">{predicted_tok}</b>')
+                    elif masked_tokens[masked_tok_idx] != self.tokenizer.pad_token_id:
+                        # We do not care about non-mask tokens. For what we know,
+                        # the model may predict utter rubbish and we won't care except
+                        # for the masked tokens
+                        expected_html.write(ground_tok)
+                        predicted_html.write(ground_tok)
 
                 expected_html.write(" ")
                 predicted_html.write(" ")
@@ -201,13 +201,15 @@ class PretrainingMetric(MetricWrapper):
         if self.enable_wandb:
             wandb.log(payload)
 
-            if self.is_validation and len(self.expected_sentences) > 0:
+            # subsample the examples
+            masked_sentences, expected_sentences, predicted_sentences = [x[::25] for x in (self.masked_sentences, self.expected_sentences, self.predicted_sentences)]
+            if self.is_validation and len(expected_sentences) > 0:
                 if self.enable_example_wandb:
                     art = wandb.Artifact("validation_metrics", type="evaluation")
                     table = wandb.Table(columns=["Masked token inputs",
                         "Expected Output", "Actual TokenPred Output"])
-                    for record in zip(self.masked_sentences, self.expected_sentences,
-                                    self.predicted_sentences):
+                    for record in zip(masked_sentences, expected_sentences,
+                                    predicted_sentences):
                         table.add_data(*map(wandb.Html, record))
 
                     art.add(table, "html")
@@ -217,8 +219,8 @@ class PretrainingMetric(MetricWrapper):
             print("===========")
             pprint.pprint(payload)
 
-        print(self.expected_sentences)
-        print(self.predicted_sentences)
+        pprint.pprint(self.expected_sentences)
+        pprint.pprint(self.predicted_sentences)
 
         return avg_loss
 
@@ -330,7 +332,7 @@ def main():
                 wiki_test_dataloader, optimizer, scheduler, epochs, metric,
                 validation_frequency= 500 * batch_size,
                 gradient_accumulation_factor=gradient_accum_size,
-                checkpoint_frequency=10)
+                checkpoint_frequency=0)
 
 
     # ISSUE: can't run torchscript tracing on heterogeneous data structures (e.g. classes)
