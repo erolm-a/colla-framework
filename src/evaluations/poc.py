@@ -275,7 +275,7 @@ def main():
     np.random.seed(42)
 
     if ENABLE_WANDB:
-        wandb.init(project="EaEPretraining", config="configs/eae_pretraining.yaml")
+        wandb.init(project="EaEPretraining", config="configs/eae_pretraining.yaml", job_type="pretraining")
         wikipedia_article_nums = wandb.config.wikipedia_article_nums
         wikipedia_cutoff_frequency = wandb.config.wikipedia_cutoff_frequency
         batch_size = wandb.config.batch_size

@@ -163,8 +163,13 @@ class ModelTrainer(ABC):
                enabled or disabled.
         """
         model_input, metric_input = self.load_from_dataloader(batch)
-        inputs = tuple(elem.to(DEVICE) for elem in model_input)
-        loss, outputs = self.model(*inputs)
+
+        if isinstance(model_input, dict):
+            inputs = {k: v.to(DEVICE) for (k, v) in model_input.items()}
+        else:
+            inputs = tuple(elem.to(DEVICE) for elem in model_input)
+        outputs = self.model(*inputs)
+        loss = outputs.loss
 
         if self.training:
             return loss
