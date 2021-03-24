@@ -19,12 +19,12 @@ from typing import List, Optional
 import pprint
 
 import torch
-from torch.utils.data import DataLoader, SubsetRandomSampler
+from torch.utils.data import DataLoader, SubsetRandomSampler, random_split
 import tqdm
 from transformers import AutoTokenizer
 
 from models.training import (train_model, get_optimizer, get_schedule,
-                            MetricWrapper, ModelTrainer, save_models)
+                            MetricWrapper, ModelTrainer)
 
 import wandb
 
@@ -42,7 +42,6 @@ class SQuADMetric(MetricWrapper):
     ):
         super().__init__(dataloader, enable_wandb)
         self.enable_example_wandb = enable_example_wandb
-        self.reset()
     
     def reset(self, is_validation: bool):
         super().reset(is_validation)
@@ -108,7 +107,7 @@ class SQuADMetric(MetricWrapper):
         return avg_loss
 
 NUM_WORKERS = 16
-ENABLE_WANDB = True
+ENABLE_WANDB = False
 
 def get_dataloaders(
     squad_dataset: SQuADDataloader,
@@ -117,9 +116,9 @@ def get_dataloaders(
 ):
 
     squad_training_dataset = getattr(squad_dataset,
-        f"train{'_dev' if is_dev else ''}_dataset")
+        f"{'dev_' if is_dev else ''}train_dataset")
     squad_test_dataset = getattr(squad_dataset,
-        f"validation{'_dev' if is_dev else ''}_dataset")
+        f"{'dev_' if is_dev else ''}validation_dataset")
 
 
     # Reserve 1% for validation
@@ -143,19 +142,19 @@ def get_dataloaders(
     return [DataLoader(dataset, batch_size=batch_size, num_workers=NUM_WORKERS)
             for dataset in (squad_training_dataset, squad_validation_dataset, squad_test_dataset)]
 
-def main(variant: str, run_id: Optional[str]):
+def main(variant: str, run_id: Optional[str], wandb_args: dict):
     np.random.seed(42)
 
-
     if ENABLE_WANDB and run_id is not None:
-        wandb.init(project="EaESquad", config="configs/eae_squad.yaml")
+        wandb.init(project="EaEPretraining", config="configs/eae_squad.yaml", job_type="squad_evaluation")
         batch_size = wandb.config.batch_size
         is_dev = wandb.config.is_dev
         gradient_accum_size = wandb.config.gradient_accum_size
         learning_rate = wandb.config.learning_rate
         full_finetuning = wandb.config.full_finetuning
         epochs = wandb.config.pretraining_epochs
-        pretraining_model = EntitiesAsExperts.from_pretrained("pretrained_eae_100k", run_id)
+        pretraining_model = EntitiesAsExperts.from_pretrained(variant, run_id)
+        run_name = f"squad{'_dev' if is_dev else ''}_{epochs}"
     else:
         batch_size = 1
         gradient_accum_size = 1
@@ -163,7 +162,8 @@ def main(variant: str, run_id: Optional[str]):
         learning_rate = 1e-4
         full_finetuning = False
         epochs = 1
-        pretraining_model = EntitiesAsExperts.from_pretrained_offline("pretraining_eae_100k")
+        pretraining_model = EntitiesAsExperts.from_pretrained(variant, run_id, as_wandb=None)
+        run_name = "squad_dev_experiment"
 
 
     squad_dataset = SQuADDataloader()
@@ -172,8 +172,17 @@ def main(variant: str, run_id: Optional[str]):
 
     squad_model = EaEForQuestionAnswering(pretraining_model)
 
-    metric = SQuADMetric(squad_validation_dataloader, enable_wandb=ENABLE_WANDB)
-    model_trainer = SquadModelTrainer(squad_model, watch_wandb=ENABLE_WANDB, enable_wandb=ENABLE_WANDB)
+    metric = SQuADMetric(
+        squad_validation_dataloader,
+        enable_wandb=ENABLE_WANDB
+    )
+
+    model_trainer = SquadModelTrainer(
+        squad_model,
+        run_name,
+        watch_wandb=ENABLE_WANDB,
+        enable_wandb=ENABLE_WANDB
+    )
 
     
     optimizer = get_optimizer(squad_model,
@@ -183,13 +192,9 @@ def main(variant: str, run_id: Optional[str]):
 
     train_model(model_trainer, squad_train_dataloader, squad_validation_dataloader,
                 squad_test_dataloader, optimizer, scheduler, epochs, metric,
-                validation_frequency= 500 * batch_size,
-                gradient_accumulation_factor=gradient_accum_size)
-
-
-
-    save_models(squad_qa_5epoch_dev=)
-
+                validation_frequency= 5 * batch_size,
+                gradient_accumulation_factor=gradient_accum_size,
+                checkpoint_frequency=0)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(  
@@ -202,4 +207,4 @@ if __name__ == "__main__":
         help='The W&B run identifier of the EaE checkpoint.')
 
     args = parser.parse_args() 
-    main(args.variant, args.run_id)
+    main(args.variant, args.run_id, args)

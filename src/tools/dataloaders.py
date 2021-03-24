@@ -25,11 +25,11 @@ import tokenizer_cereal
 import numpy as np
 
 import datasets
-
 import pprint
 import pandas as pd
-from tokenizers.pre_tokenizers import Whitespace # we'll need it...
 from transformers import AutoTokenizer
+from tokenizers.normalizers import BertNormalizer
+from tokenizers.pre_tokenizers import Whitespace
 from transformers.data.processors import squad
 import torch
 from torch.utils.data import Dataset
@@ -293,6 +293,7 @@ class WikipediaCBOR(Dataset):
         prev_body = ""
         links = []
 
+        normalizer = BertNormalizer()
         splitter = Whitespace()
         # splitter = 0
 
@@ -325,7 +326,7 @@ class WikipediaCBOR(Dataset):
             nonlocal prev_body
             cur_body = body.get_text()
 
-            split_body = splitter.pre_tokenize_str(cur_body)
+            split_body = splitter.pre_tokenize_str(normalizer.normalize_str(cur_body))
             #print('from handle_paratext: "' + body.get_text() + '"')
 
             # take care of the space...
@@ -354,7 +355,7 @@ class WikipediaCBOR(Dataset):
             encoded_link = encode_link(body.page)
             cur_body = body.get_text()
 
-            split_body = splitter.pre_tokenize_str(cur_body)
+            split_body = splitter.pre_tokenize_str(normalizer.normalize_str(cur_body))
             #print('from handle_paralink: "' + body.get_text() + '"')
 
             running_prefix = 0

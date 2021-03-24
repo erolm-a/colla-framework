@@ -4,6 +4,7 @@ An implementation of Entities As Experts.
 
 from copy import deepcopy
 import json
+import os
 from typing import cast, Any, Optional, Tuple, Union, NamedTuple
 
 import torch
@@ -344,9 +345,11 @@ class TokenPred(TokenPredHead):
 
 
 class EntitiesAsExpertsOutputs(NamedTuple):
-    bert_output: BaseModelOutputWithPastAndCrossAttentions
+    loss: torch.Tensor
+    hidden_states: torch.FloatTensor
     token_prediction_scores: torch.Tensor
     entity_prediction_scores: torch.Tensor
+    bio_logits: torch.FloatTensor
 
 
 class EntitiesAsExperts(Module, TorchScriptDumpable):
@@ -361,7 +364,8 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
             l1: int,
             entity_size: int,
             entity_embedding_size=256,
-            bert_model_variant="bert-base-uncased"
+            bert_model_variant="bert-base-uncased",
+            *args, **kwargs
     ):
         """
         :param bert_model: a pretrained bert instance that can perform Masked LM.
@@ -372,6 +376,9 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
         :param entity_embedding_size the size of an entity embedding
         """
         super().__init__()
+
+        self.l0 = 4
+        self.l1 = 8
 
         self.bert_model_variant = bert_model_variant
 
@@ -399,8 +406,7 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
         mention_boundaries: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         token_type_ids: Optional[torch.Tensor] = None,
-
-    ):
+    ) -> EntitiesAsExpertsOutputs:
         """
         :param input_ids the masked tokenized input of shape B x 512
         :param attention_mask the attention mask of shape B x 512
@@ -411,7 +417,7 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
         :param return_logits if true return the scores of the token prediction and entity prediction
                heads.
 
-        :returns a triplet loss, logits (for token_pred) and output of the last transformer block
+        :returns :type EntitiesAsExpertsOutput
         """
 
         compute_loss = mention_boundaries is not None and entity_inputs is not None
@@ -426,9 +432,10 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
                                                    attention_mask=attention_mask,
                                                    labels=mention_boundaries)
 
+        # NOTE: While using the correct bio_outputs boosts training, it also
+        # gives artificially high results during testing.
         if not compute_loss:
-            bio_choices = torch.argmax(bio_outputs, 2)
-            mention_boundaries = bio_choices
+            mention_boundaries = torch.argmax(bio_outputs, 2)
 
         entity_loss, entity_inputs = self.entity_memory(
             hidden_attention, mention_boundaries, entity_inputs)
@@ -436,71 +443,92 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
         bert_output = self.second_block(self.layernorm(entity_inputs + hidden_attention),
                                         encoder_attention_mask=attention_mask)
 
+        last_hidden_state = bert_output.last_hidden_state
+
         token_pred_loss, token_prediction_scores = self.tokenpred(
-            bert_output.last_hidden_state, output_ids)
+            last_hidden_state, output_ids)
         entity_pred_loss, entity_prediction_scores = self.entitypred(
-            bert_output.last_hidden_state, entity_outputs)
+            last_hidden_state, entity_outputs)
 
         loss = None
 
         if compute_loss:
             loss = entity_loss + bio_loss + token_pred_loss + entity_pred_loss
 
-        return (loss, EntitiesAsExpertsOutputs(
-            bert_output,
+        return EntitiesAsExpertsOutputs(
+            loss,
+            last_hidden_state,
             token_prediction_scores,
-            entity_prediction_scores
-        ))
+            entity_prediction_scores,
+            bio_outputs
+        )
 
     @staticmethod
-    def from_pretrained(config: str, run_id: str):
+    def from_pretrained(
+        config: str,
+        run_id: str,
+        as_wandb: Optional[str] = "save",
+        checkpoint_format="pt"
+    ) -> Module:
         """
-        Load a pretrained model. Probe wandb to get the right checkpoint to use
+        Load a pretrained model.
 
         :param config the configuration to use
-        :param run_id the run identifier that states where it has been saved.
-
+        :param run_id depends on as_wandb.
+               If as_wandb is "save" this should be the run identifier of the checkpoint to load.
+               If as_wandb is "artifact" this should be the identifier of the project.
+               If as_wandb is None this should be an absolute path leading to the folder.
+               containing the given config file.
+        :param as_wandb can be either "save", "artifact" or None. 
+        :param checkpoint_format the save format to use. Currently only h5 is supported.
         """
 
-        checkpoint_path = config + ".h5"
+        # TODO: add load support for torchscript
+        # FIXME: while we say "h5" technically these are in pytorch format
+        if checkpoint_format == "pt":
+            checkpoint_path = config + ".pt"
+        else:
+            raise NotImplementedError(f"The given format {checkpoint_format} has not been implemented")
+            
         model_config_path = config + ".json"
 
-        model_json = wandb.restore(model_config_path, run_id)
+        if as_wandb == "save":
+            model_json = wandb.restore(model_config_path, run_id)
 
-        assert model_json is not None, "Could not find the required run"
+            assert model_json is not None, "Could not find the required run"
+            checkpoint = wandb.restore(checkpoint_path, run_id)  # type: Any
+
+            # Someone will have to explain why W&B thinks you can only save text files
+            checkpoint = checkpoint.buffer.raw
+        elif as_wandb is None:
+            model_json = open(os.path.join(run_id, model_config_path))
+            checkpoint = open(os.path.join(run_id, checkpoint_path), "rb")
+        else:
+            # TODO
+            raise NotImplementedError(f"To implement: artifact loading")
+
         config_dict = json.load(model_json)
-        checkpoint = wandb.restore(checkpoint_path, run_id)  # type: Any
+        # FIXME: remove this once runs are fixed
+        config_dict["entity_size"] = 30550
 
         model = EntitiesAsExperts(**config_dict)
-
-        model.load_state_dict(torch.load(checkpoint.buffer.raw,
-                                         map_location=torch.device('cpu')))
+        model.load_state_dict(torch.load(checkpoint, map_location=torch.device('cpu')))
 
         return model
-
-    @staticmethod
-    def from_pretrained_offline(config: str):
-        with wrap_open(f"eae/{config}.json") as f:
-            config_dict = json.load(f)
-
-        with wrap_open(f"eae/{config}.h5", "rb") as f:
-            model = EntitiesAsExperts(**config_dict)
-            model.load_state_dict(torch.load(f, map_location=torch.device('cpu')))
-            return model
 
     @property
     def config(self):
         """
         A configuration dict to be used when loading or saving a model.
         """
-        # TODO: extract from the constructor
         return {
-            "l0": 4,
-            "l1": 8,
+            "l0": self.l0,
+            "l1": self.l1,
             "bert_model_variant": self.bert_model_variant,
-            "entity_size": 30703,
-            "entity_embedding_size": 256,
-            "hidden_size": self._config.hidden_size
+            "entity_size": self.entity_memory.N,
+            "entity_embedding_size": self.entity_memory.d_ent,
+
+            **vars(self._config)
         }
 
     def generate_dummy_input(self):
@@ -510,6 +538,7 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
 
 
 class EaEForQuestionAnsweringOutput(NamedTuple):
+    loss: Optional[torch.Tensor]
     start_logits: torch.Tensor
     end_logits: torch.Tensor
     # 0: possible, 1: impossible.
@@ -529,14 +558,18 @@ class EaEForQuestionAnswering(Module):
         super().__init__()
         self.eae = eae
         self.eae.training = False
-        self.qa_outputs = Linear(eae.config["hidden_size"], 2)
+        hidden_size = eae.config["hidden_size"]
+        max_position_embeddings = eae.config["max_position_embeddings"]
+        self.qa_outputs = Linear(hidden_size, 2)
 
-        # I could not find enough information on how this works
-        self.impossible_outputs = Linear(eae.config["hidden_size"] * 512, 2)
+        # I could not find enough information on how this works, so I am improvising...
+        # Another possibility would be to simply threshold on the logit values
+        self.impossible_outputs = Linear(hidden_size * max_position_embeddings, 2)
         self.impossible_outputs_loss_fct = CrossEntropyLoss()
         self.config = eae.config
 
         # Freeze the entity memory
+        # This is mandated in the EaE paper
         for param_weight in self.eae.entity_memory.parameters():
             param_weight.requires_grad = False
 
@@ -564,13 +597,13 @@ class EaEForQuestionAnswering(Module):
 
         # Copycat from BertForQuestionAnswering.forward()
         # Basically a logit on 2 terms with appropriate clamping
-        _, outputs = self.eae(
+        outputs = self.eae(
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids
         )
 
-        logits = self.qa_outputs(outputs.bert_output.last_hidden_state)
+        logits = self.qa_outputs(outputs.last_hidden_state)
         start_logits, end_logits = logits.split(1, dim=-1)
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
@@ -592,7 +625,7 @@ class EaEForQuestionAnswering(Module):
             end_loss = loss_fct(end_logits, end_positions)
 
             if is_possible is not None:
-                possible_logits = self.impossible_outputs(outputs.bert_output.last_hidden_state)
+                possible_logits = self.impossible_outputs(outputs.last_hidden_state)
                 possible_loss = self.impossible_outputs_loss_fct(possible_logits, is_possible)
 
                 total_loss = (start_loss + end_loss + possible_loss) / 3
@@ -601,4 +634,7 @@ class EaEForQuestionAnswering(Module):
                     start_logits, end_logits, possible_logits
                 )
 
-        return total_loss, EaEForQuestionAnsweringOutput(start_logits, end_logits)
+        if total_loss is not None and outputs.loss is not None:
+            total_loss += outputs.loss
+        
+        return EaEForQuestionAnsweringOutput(total_loss, start_logits, end_logits)
