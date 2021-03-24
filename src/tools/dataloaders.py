@@ -25,7 +25,12 @@ import tokenizer_cereal
 import numpy as np
 
 import datasets
+
+import pprint
+import pandas as pd
 from tokenizers.pre_tokenizers import Whitespace # we'll need it...
+from transformers import AutoTokenizer
+from transformers.data.processors import squad
 import torch
 from torch.utils.data import Dataset
 import tqdm
@@ -637,67 +642,69 @@ class SQuADDataloader():
                     idx = idx.item()
                 return self.dataset[idx]
 
-    def __init__(self, block_size=512):
+    def __init__(self,
+        max_seq_length=512,
+        max_query_length=384,
+        doc_stride=128,
+        
+    ):
         """
         Set up a Squad dataloader pipeline.
-
-        :param block_size The model's block size. We drop questions that do not fit the model.
         """
 
         # TODO: Use Transformer's interface for the tokenizer rather than the crude one
         # TODO: Deprecate vocabs.py
-        self.tokenizer = load_tokenizer('bert-base-uncased')
+        # self.tokenizer = load_tokenizer('bert-base-uncased')
+
+        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=False)
         self.dataset = datasets.load_dataset("squad")
 
+        squad.squad_convert_example_to_features_init(self.tokenizer)
+
         def encode(examples):
-            contexts = examples['context']
-            questions = examples['question']
+            qas_id = examples["id"]
+            question_text = examples["question"]
+            answers = examples["answers"]
+            answer_text, start_position_characters = zip(*[
+                (answer["text"][0], answer["answer_start"][0]) for answer in answers])
+            answer_text = list(answer_text)
+            start_position_characters = list(start_position_characters)
+            titles = examples["title"]
+            context_text = examples["context"]
 
-            encoded_full_sentences = [self.tokenizer.encode(context, question)
-                                      for context, question in zip(contexts, questions)]
+            squad_examples = list(squad.SquadExample(*args) for args in zip(
+                qas_id,
+                question_text,
+                context_text,
+                answer_text,
+                start_position_characters,
+                titles,
+                answers
+            ))
 
-            for sentence in encoded_full_sentences:
-                sentence.pad(block_size)
-                sentence.truncate(block_size)
+            features = squad.squad_convert_examples_to_features(
+                squad_examples,
+                self.tokenizer,
+                max_seq_length,
+                doc_stride,
+                max_query_length,
+                True,
+            )
 
-            answers = examples['answers']
-            # TODO: tag unanswerable questions with -1
-            answers_start = [answer['answer_start'][0]
-                             for answer in answers]  # this is a byte offset
+            # In case of split context create singleton lists.
+            result = pd.DataFrame([vars(feature) for feature in features])
+            result_dropped = result.drop(["example_index", "token_is_max_context",
+                                  "encoding", "token_to_orig_map", "cls_index"], axis=1)
+            
+            result_as_dict = result_dropped.groupby("qas_id", as_index=False).agg(list).to_dict()
+            
+            result = {k: list(v.values()) for k, v in result_as_dict.items()}
 
-            answers_end = [answer_start + len(answer['text'][0]) for answer, answer_start in
-                           zip(answers, answers_start)]
+            #pprint.pprint(result)
 
-            answer_start_idx = [-1] * len(answers_start)
-            answer_end_idx = [-1] * len(answers_end)
+            return result
 
-            for answer_idx, (encoded_sentence, answer_start, answer_end) in \
-                    enumerate(zip(encoded_full_sentences, answers_start, answers_end)):
-                for idx, (start_offset, end_offset) in enumerate(encoded_sentence.offsets):
-                    # Separation tokens have 0-len span.
-                    if start_offset == end_offset:
-                        continue
-
-                    if start_offset >= answer_start and answer_start_idx[answer_idx] == -1:
-                        answer_start_idx[answer_idx] = idx
-
-                    if end_offset >= answer_end and answer_end_idx[answer_idx] == -1:
-                        answer_end_idx[answer_idx] = idx
-                        break
-
-                    # assign answer_end_idx to the SEP position if nothing is found
-                    if encoded_sentence.token_to_chars(idx) == "[SEP]":
-                        answer_end_idx[answer_idx] = idx - 1
-                        break
-
-            input_ids = [x.ids for x in encoded_full_sentences]
-            type_ids = [x.type_ids for x in encoded_full_sentences]
-            attention_mask = [x.attention_mask for x in encoded_full_sentences]
-
-            return {'input_ids': input_ids, 'attention_mask': attention_mask,
-                    'token_type_ids': type_ids, 'answer_start': answer_start_idx,
-                    'answer_end': answer_end_idx}
-
+        #self.tokenized_dataset = encode(self.dataset["train"][0])
         self.tokenized_dataset = self.dataset.map(encode, batched=True)
 
         # Ready-to-use datasets, compatible with samplers if needed.
@@ -711,13 +718,15 @@ class SQuADDataloader():
             self.tokenized_dataset["validation"]
         )
 
-        self.validation_dev_dataset = SQuADDataloader.SquadDataset(
+        self.dev_validation_dataset = SQuADDataloader.SquadDataset(
             self.tokenized_dataset["validation"],
             int(len(self.validation_dataset))
         )
 
-        self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'attention_mask', 'token_type_ids',
-                                                                 'answer_start', 'answer_end'])
+
+        # TODO: can we still export to pytorch tensors? We sure need to change the column formats...
+        #self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'attention_mask', 'token_type_ids',
+        #                                                         'answer_start', 'answer_end'])
 
 
     def reconstruct_sentences(
@@ -741,3 +750,4 @@ class SQuADDataloader():
             in zip(input_ids_list, answers_start, answers_end)]
 
         return self.tokenizer.decode_batch(answers)
+
