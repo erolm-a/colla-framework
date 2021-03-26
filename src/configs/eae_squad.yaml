@@ -3,7 +3,7 @@ epochs:
   value: 5
 is_dev:
   desc: Train only on a small development set
-  value: True
+  value: False
 batch_size:
   desc: Batch size while finetuning for SQuAD
   value: 8

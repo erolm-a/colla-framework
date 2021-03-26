@@ -673,6 +673,15 @@ class SQuADDataloader():
             titles = examples["title"]
             context_text = examples["context"]
 
+            # Avoid reshuffling issues by performing a late join
+            examples_pd = pd.DataFrame({
+                "id": qas_id,
+                "answers": answers,
+                "title": titles,
+                "context": context_text,
+                "question": question_text
+            })
+
             squad_examples = list(squad.SquadExample(*args) for args in zip(
                 qas_id,
                 question_text,
@@ -695,18 +704,60 @@ class SQuADDataloader():
             # In case of split context create singleton lists.
             result = pd.DataFrame([vars(feature) for feature in features])
             result_dropped = result.drop(["example_index", "token_is_max_context",
-                                  "encoding", "token_to_orig_map", "cls_index"], axis=1)
+                                  "encoding", "token_to_orig_map", "cls_index", "paragraph_len",
+                                  "unique_id"], axis=1)
             
-            result_as_dict = result_dropped.groupby("qas_id", as_index=False).agg(list).to_dict()
-            
-            result = {k: list(v.values()) for k, v in result_as_dict.items()}
+            # the HF processor silently removes problematic rows. In this case we have no choice but
+            # to add singletons for now and filter them out later 
+        
+            result_grouped = result_dropped.groupby("qas_id", as_index=False).agg(list)
 
+            """
+            qas_id_set = set(qas_id)
+            example_qas_id_set = set(result_grouped["qas_id"])
+            diff_set = qas_id_set - example_qas_id_set
+
+            result_cols = ["qas_id", "input_ids", "attention_mask", "token_type_ids",
+                             "p_mask", "tokens", "start_position", "end_position", "is_impossible"]
+            
+            dummy_records = [(qa_id, [], [], [], [], [], [], [], []) for qa_id in diff_set]
+            #dummy_records = [(qa_id, [], [], [], [], [],  [-1], [-1], [True]) for qa_id in diff_set]
+            dummy_df = pd.concat([pd.DataFrame(dummy_records, columns=result_cols)],
+                                  ignore_index=True)
+            
+            result_grouped = result_grouped.append(dummy_df, ignore_index=True)
+            """
+            result_grouped = examples_pd.set_index("id").join(
+                result_grouped.set_index("qas_id"),
+                how="left"
+            ).reset_index()
+
+            result_as_dict = result_grouped.to_dict()
+            
+
+            result = {}
+
+            for k, v in result_as_dict.items():
+                values = list(v.values())
+                for i in range(len(values)):
+                    if values[i] != values[i]: # NaN:
+                        values[i] = []
+                result[k] = values
+
+            """
+            if len(result["attention_mask"]) != len(qas_id):
+                print("Mismatch detected! The pipeline will fail shortly! Dumping a dataloader into \"squad_dataloader_failure.pandas.pkl\".")
+                result_dropped.to_pickle("squad_dataloader_failure.pandas.pkl")
+                result_grouped.to_pickle("squad_dataloader_failure.pandas_grouped.pkl")
             #pprint.pprint(result)
 
+            """
             return result
 
-        #self.tokenized_dataset = encode(self.dataset["train"][0])
-        self.tokenized_dataset = self.dataset.map(encode, batched=True)
+            
+        self.tokenized_dataset = self.dataset.map(encode, batched=True) \
+                                                    .filter(lambda example: len(example["input_ids"]) > 0)
+        
 
         # Ready-to-use datasets, compatible with samplers if needed.
         self.train_dataset = SQuADDataloader.SquadDataset(
@@ -725,30 +776,8 @@ class SQuADDataloader():
         )
 
 
-        # TODO: can we still export to pytorch tensors? We sure need to change the column formats...
+        # We can't export to pytorch's tensors because we also need the answers sublist!
         #self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'attention_mask', 'token_type_ids',
         #                                                         'answer_start', 'answer_end'])
 
-
-    def reconstruct_sentences(
-                             self,
-                             input_ids_list: List[List[int]],
-                             answers_start: List[int],
-                             answers_end: List[int]
-                             ) -> List[str]:
-        """
-        Reconstruct the sentences given a list of token ids and a span.
-        Unfortunately there is no way to do that efficiently given that spans are ragged.
-
-        :param input_ids_list
-        :param answers_start
-        :param answers_end
-
-        :returns a list of strings
-        """
-
-        answers = [input_ids[answer_start:answer_end+1] for input_ids, answer_start, answer_end 
-            in zip(input_ids_list, answers_start, answers_end)]
-
-        return self.tokenizer.decode_batch(answers)
 
