@@ -5,11 +5,14 @@ import bisect
 from collections import defaultdict, namedtuple
 from copy import deepcopy
 from io import StringIO
+import re
+
 import itertools
 import math
 import os
 import pickle
-from typing import List, Tuple, Dict, Sequence
+from heapq import merge
+from typing import List, Tuple, Dict, Sequence, Optional, NamedTuple, NewType
 
 from trec_car import read_data
 from trec_car.read_data import (AnnotationsFile, Page, Para,
@@ -22,14 +25,20 @@ import tokenizer_cereal
 import numpy as np
 
 import datasets
+import pprint
+import pandas as pd
+from transformers import AutoTokenizer
+from tokenizers.normalizers import BertNormalizer
+from tokenizers.pre_tokenizers import Whitespace
+from transformers.data.processors import squad
 import torch
 from torch.utils.data import Dataset
 import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
-from .dumps import get_filename_path
-from .vocabs import load_tokenizer
-
+from tools.dumps import get_filename_path
+from tools.vocabs import load_tokenizer
+from tools.strings import MyRecordTrie
 
 def b2i(number_as_bytes: bytes):
     """
@@ -38,7 +47,17 @@ def b2i(number_as_bytes: bytes):
     return int.from_bytes(number_as_bytes, "big")
 
 
-PageFormat = namedtuple("PageFormat", ["id", "text", "link_mentions"])
+# Token and token lists returned from a Whitespace tokenization
+Token = NewType("Token", Tuple[str, Tuple[int, int]])
+TokenizedText = NewType("TokenizedText", List[Token])
+Link = NewType("Link", Tuple[int, int, int])
+
+class PageFormat(NamedTuple):
+    id: int
+    title: str
+    #text: str
+    pretokenized_text: TokenizedText
+    link_mentions: List[Link]
 
 
 class WikipediaCBOR(Dataset):
@@ -54,16 +73,17 @@ class WikipediaCBOR(Dataset):
     application-ready torch dataloader to be used inside BERT.
     """
 
-    def __init__(self,
-                 cbor_path: str,
-                 partition_path: str,
-                 cutoff_frequency=0.03,
-                 page_lim=-1,
-                 token_length=512,
-                 clean_cache=False,
-                 repreprocess=False,
-                 recount=False,
-                 ):
+    def __init__(
+        self,
+        cbor_path: str,
+        partition_path: str,
+        cutoff_frequency=0.03,
+        page_lim=-1,
+        token_length=512,
+        clean_cache=False,
+        repreprocess=False,
+        recount=False,
+    ):
         """
         :param cbor_path the relative path of the wikipedia cbor export
         :param partition_path the relative path of the partitions to use
@@ -249,11 +269,14 @@ class WikipediaCBOR(Dataset):
 
             else:
                 for i in range(span[0], span[1]):
-                    output_tokens[i] = 103  # [MASK]
-                    output_entities[i] = 103  # [MASK]
+                    output_tokens[i] = 103 # [MASK] 
+                    output_entities[i] = 0 # TODO allocate a special [MASK] token for links.
         return output_tokens, output_entities, output_bio
 
-    def preprocess_page(self, enumerated_page: Tuple[int, Page]) -> PageFormat:
+    def preprocess_page(
+        self,
+        enumerated_page: Tuple[int, Page]
+    ):
         """
         Transform a list of pages into a flattened representation that can
         then be easily (de)serialized.
@@ -263,13 +286,21 @@ class WikipediaCBOR(Dataset):
 
         # For the sake of easy link spans they are byte oriented to make
         # it easier for the rust std
-        page_content = StringIO()
+        # page_content = StringIO()
+        split_content = []
+        orig_page_content = StringIO()
+        prev_page_length = 0
+        prev_body = ""
         links = []
+
+        normalizer = BertNormalizer()
+        splitter = Whitespace()
+        # splitter = 0
 
         # Encode a link. Cast to padding if the link was not "common".
         # Call this method only after preprocessing has been done!
         def encode_link(link):
-            #return self.key_restrictor.get(self.key_encoder.get(link, 0), 0)
+            #return self.key_encoder.get(link, 0)
             return self.key_encoder.get(link, 0)
 
         # People say pattern matching is overrated.
@@ -291,22 +322,71 @@ class WikipediaCBOR(Dataset):
                 visit_section(body)
 
         def handle_paratext(body: ParaBody):
-            page_content.write(body.get_text())
+            nonlocal prev_page_length
+            nonlocal prev_body
+            cur_body = body.get_text()
+
+            split_body = splitter.pre_tokenize_str(normalizer.normalize_str(cur_body))
+            #print('from handle_paratext: "' + body.get_text() + '"')
+
+            # take care of the space...
+            running_prefix = 0
+            current_page_length = prev_page_length + len(cur_body)
+            if len(split_content) > 0:
+                running_prefix = prev_page_length #split_content[-1][1][1]
+
+            orig_page_content.write(cur_body)
+
+            #print(f"After skipping: {orig_page_content.getvalue()[running_prefix:]}")
+
+            split_body = [(text, (begin_offset + running_prefix,
+                                    end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+
+            # print(split_body)
+
+            split_content.extend(split_body)
+
+            prev_page_length = current_page_length
+            prev_body = body.get_text()
 
         def handle_paralink(body: ParaLink):
+            nonlocal prev_body
+            nonlocal prev_page_length
             encoded_link = encode_link(body.page)
-            start_byte_span = page_content.tell()
-            end_byte_span = start_byte_span + len(body.get_text()) - 1
-            page_content.write(body.get_text())
+            cur_body = body.get_text()
 
-            links.append((encoded_link, start_byte_span, end_byte_span))
+            split_body = splitter.pre_tokenize_str(normalizer.normalize_str(cur_body))
+            #print('from handle_paralink: "' + body.get_text() + '"')
+
+            running_prefix = 0
+            current_page_length = prev_page_length + len(cur_body)
+            if len(split_content) > 0:
+                running_prefix = prev_page_length
+
+            orig_page_content.write(cur_body)
+ 
+            split_body = [(text, (begin_offset + running_prefix,
+                                    end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+
+            split_content.extend(split_body)
+
+            if len(split_body) > 0:
+                end_byte_span = split_body[-1][1][1] - 1
+                start_mention_idx = len(split_content) - len(split_body)
+                links.append((encoded_link, start_mention_idx, len(split_content)))
+
+            #for tok, (begin, end) in split_body:
+            #    assert tok == orig_page_content.getvalue()[begin:end], f"generated {orig_page_content.getvalue()[begin:end]} but expected {tok}"
+
+            prev_page_length = current_page_length
+            prev_body = body.get_text()
 
         def nothing():
             return lambda body: None
 
         handler = defaultdict(nothing, {Section: handle_section,
                                         Para: handle_para,
-                                        List: handle_list,
+                                        ParaList: handle_list,
                                         ParaLink: handle_paralink,
                                         ParaText: handle_paratext})
 
@@ -317,7 +397,87 @@ class WikipediaCBOR(Dataset):
         for skel in page.skeleton:
             visit_section(skel)
 
-        return PageFormat(id, page_content.getvalue(), links)
+        return orig_page_content.getvalue(), PageFormat(id, page.page_name, split_content, links)
+    
+    @staticmethod
+    def autolink(
+        page_id: int,
+        title: str,
+        text: str,
+        tokenized_text: TokenizedText,
+        links: List[Link]
+    ) -> List[Link]:
+        link_idx = 0
+
+        exact_mentions = {}
+
+        # TODO: deal with ambiguities...
+        exact_mentions[title] = page_id
+
+        #print(exact_mentions)
+
+        remapped_links = []
+        for link in links:
+            # revert the tokenization algorithm
+            start_byte = tokenized_text[link[1]][1][0]
+            end_byte = tokenized_text[link[2]-1][1][1]
+
+            #print(text[start_byte:end_byte])
+
+            exact_mentions[text[start_byte:end_byte]] = link[0]
+            remapped_links.append((link[0], start_byte, end_byte))
+        
+
+        #print(list(map(lambda x: (x[0], (x[1],)), exact_mentions.items())))
+
+        trie = MyRecordTrie(map(lambda x: (x[0], (x[1],)), exact_mentions.items()))
+
+        #print(trie.keys())
+
+        # print(trie.items())
+        patterns = sorted(trie.search_longest_patterns(tokenized_text), key=lambda x: x[1]) # sort by apparition
+
+
+        link = None
+        link_idx = 0
+        new_links = []
+        
+        for title, idx, new_link_id, _ in patterns:
+            
+            new_link = (new_link_id, idx, idx + len(title))
+            # print(title, new_link)
+
+            if link_idx < len(remapped_links):
+                link = remapped_links[link_idx]
+            
+            while link_idx < len(remapped_links) - 1 and idx > link[2]:
+                link_idx += 1
+                link = remapped_links[link_idx]
+                #print("Increasing")
+
+            if link_idx >= len(remapped_links):
+                link = None
+            
+            if link is None or idx < link[1]:
+                new_links.append(new_link)
+                #print(title, new_link)
+            else:
+                #print("Found existing link",  link)
+                #print("Compare with: ", new_link)
+                pass
+        
+        # print(f"The page has {len(remapped_links)} links by default")
+        # print("Added new ", len(new_links), "links")
+        return list(merge(remapped_links, new_links, key=lambda x: x[1]))
+
+    def preprocessing_pipeline(self, enumerated_page: Tuple[int, Page]):
+        text, page_output = self.preprocess_page(enumerated_page)
+        new_links = WikipediaCBOR.autolink(
+            page_output.id,page_output.title,
+            text, page_output.pretokenized_text,
+            page_output.link_mentions)
+        
+        return PageFormat(page_output.id, page_output.title, page_output.pretokenized_text, new_links)
 
     def preprocess(self, limit: int):
         """
@@ -330,7 +490,7 @@ class WikipediaCBOR(Dataset):
         with open(self.cbor_path, "rb") as cbor_fp:
             # TODO: revert to a function-based approach
             tokenizer = tokenizer_cereal.TokenizerCereal(self.rust_cereal_path,
-                                                         map(self.preprocess_page, enumerate(
+                                                         map(self.preprocessing_pipeline, enumerate(
                                                              read_data.iter_annotations(cbor_fp))),
                                                          limit)
 
@@ -463,110 +623,161 @@ class SQuADDataloader():
     # Fancy getitem to work with samplers
 
     class SquadDataset(Dataset):
-        def __init__(self, dataset):
+        def __init__(
+            self,
+            dataset: Dataset,
+            custom_len: Optional[int] = None
+        ):
             self.dataset = dataset
+            self.length = custom_len if custom_len else len(self.dataset)
         
         def __len__(self):
-            return len(self.dataset)
+            return self.length
         
         def __getitem__(self, idx):
             if type(idx) == list or type(idx) == torch.tensor:
                 return [self.dataset[i] for i in idx]
             else:
-                # TODO: this is very fragile
+                # FIXME: this is very fragile
                 if type(idx) == np.int64:
                     idx = idx.item()
                 return self.dataset[idx]
 
-    def __init__(self, block_size=512):
+    def __init__(self,
+        max_seq_length=512,
+        max_query_length=384,
+        doc_stride=128,
+        
+    ):
         """
         Set up a Squad dataloader pipeline.
-
-        :param block_size The model's block size. We drop questions that do not fit the model.
         """
-        self.tokenizer = load_tokenizer('bert-base-uncased')
+
+        # TODO: Use Transformer's interface for the tokenizer rather than the crude one
+        # TODO: Deprecate vocabs.py
+        # self.tokenizer = load_tokenizer('bert-base-uncased')
+
+        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=False)
         self.dataset = datasets.load_dataset("squad")
 
+        squad.squad_convert_example_to_features_init(self.tokenizer)
+
         def encode(examples):
-            contexts = examples['context']
-            questions = examples['question']
+            qas_id = examples["id"]
+            question_text = examples["question"]
+            answers = examples["answers"]
+            answer_text, start_position_characters = zip(*[
+                (answer["text"][0], answer["answer_start"][0]) for answer in answers])
+            answer_text = list(answer_text)
+            start_position_characters = list(start_position_characters)
+            titles = examples["title"]
+            context_text = examples["context"]
 
-            encoded_full_sentences = [self.tokenizer.encode(context, question)
-                                      for context, question in zip(contexts, questions)]
+            # Avoid reshuffling issues by performing a late join
+            examples_pd = pd.DataFrame({
+                "id": qas_id,
+                "answers": answers,
+                "title": titles,
+                "context": context_text,
+                "question": question_text
+            })
 
-            for sentence in encoded_full_sentences:
-                sentence.pad(block_size)
-                sentence.truncate(block_size)
+            squad_examples = list(squad.SquadExample(*args) for args in zip(
+                qas_id,
+                question_text,
+                context_text,
+                answer_text,
+                start_position_characters,
+                titles,
+                answers
+            ))
 
-            answers = examples['answers']
-            # TODO: tag unanswerable questions with -1
-            answers_start = [answer['answer_start'][0]
-                             for answer in answers]  # this is a byte offset
+            features = squad.squad_convert_examples_to_features(
+                squad_examples,
+                self.tokenizer,
+                max_seq_length,
+                doc_stride,
+                max_query_length,
+                True,
+            )
 
-            answers_end = [answer_start + len(answer['text'][0]) for answer, answer_start in
-                           zip(answers, answers_start)]
+            # In case of split context create singleton lists.
+            result = pd.DataFrame([vars(feature) for feature in features])
+            result_dropped = result.drop(["example_index", "token_is_max_context",
+                                  "encoding", "token_to_orig_map", "cls_index", "paragraph_len",
+                                  "unique_id"], axis=1)
+            
+            # the HF processor silently removes problematic rows. In this case we have no choice but
+            # to add singletons for now and filter them out later 
+        
+            result_grouped = result_dropped.groupby("qas_id", as_index=False).agg(list)
 
-            answer_start_idx = [-1] * len(answers_start)
-            answer_end_idx = [-1] * len(answers_end)
+            """
+            qas_id_set = set(qas_id)
+            example_qas_id_set = set(result_grouped["qas_id"])
+            diff_set = qas_id_set - example_qas_id_set
 
-            for answer_idx, (encoded_sentence, answer_start, answer_end) in \
-                    enumerate(zip(encoded_full_sentences, answers_start, answers_end)):
-                for idx, (start_offset, end_offset) in enumerate(encoded_sentence.offsets):
-                    # Separation tokens have 0-len span.
-                    if start_offset == end_offset:
-                        continue
+            result_cols = ["qas_id", "input_ids", "attention_mask", "token_type_ids",
+                             "p_mask", "tokens", "start_position", "end_position", "is_impossible"]
+            
+            dummy_records = [(qa_id, [], [], [], [], [], [], [], []) for qa_id in diff_set]
+            #dummy_records = [(qa_id, [], [], [], [], [],  [-1], [-1], [True]) for qa_id in diff_set]
+            dummy_df = pd.concat([pd.DataFrame(dummy_records, columns=result_cols)],
+                                  ignore_index=True)
+            
+            result_grouped = result_grouped.append(dummy_df, ignore_index=True)
+            """
+            result_grouped = examples_pd.set_index("id").join(
+                result_grouped.set_index("qas_id"),
+                how="left"
+            ).reset_index()
 
-                    if start_offset >= answer_start and answer_start_idx[answer_idx] == -1:
-                        answer_start_idx[answer_idx] = idx
+            result_as_dict = result_grouped.to_dict()
+            
 
-                    if end_offset >= answer_end and answer_end_idx[answer_idx] == -1:
-                        answer_end_idx[answer_idx] = idx
-                        break
+            result = {}
 
-                    # assign answer_end_idx to the SEP position if nothing is found
-                    if encoded_sentence.token_to_chars(idx) == "[SEP]":
-                        answer_end_idx[answer_idx] = idx - 1
-                        break
+            for k, v in result_as_dict.items():
+                values = list(v.values())
+                for i in range(len(values)):
+                    if values[i] != values[i]: # NaN:
+                        values[i] = []
+                result[k] = values
 
-            input_ids = [x.ids for x in encoded_full_sentences]
-            type_ids = [x.type_ids for x in encoded_full_sentences]
-            attention_mask = [x.attention_mask for x in encoded_full_sentences]
+            """
+            if len(result["attention_mask"]) != len(qas_id):
+                print("Mismatch detected! The pipeline will fail shortly! Dumping a dataloader into \"squad_dataloader_failure.pandas.pkl\".")
+                result_dropped.to_pickle("squad_dataloader_failure.pandas.pkl")
+                result_grouped.to_pickle("squad_dataloader_failure.pandas_grouped.pkl")
+            #pprint.pprint(result)
 
-            return {'input_ids': input_ids, 'attention_mask': attention_mask,
-                    'token_type_ids': type_ids, 'answer_start': answer_start_idx,
-                    'answer_end': answer_end_idx}
+            """
+            return result
 
-        self.tokenized_dataset = self.dataset.map(encode, batched=True)
-        #self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'token_type_ids',
-        #                                                         'attention_mask', 'answer_start',
-        #                                                         'answer_end'])
+            
+        self.tokenized_dataset = self.dataset.map(encode, batched=True) \
+                                                    .filter(lambda example: len(example["input_ids"]) > 0)
+        
 
-    @property
-    def train_dataset(self):
-        return SQuADDataloader.SquadDataset(self.tokenized_dataset["train"])
+        # Ready-to-use datasets, compatible with samplers if needed.
+        self.train_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["train"]
+        )
+        self.dev_train_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["train"], int(len(self.train_dataset)*0.01)
+        )
+        self.validation_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["validation"]
+        )
 
-    @property
-    def validation_dataset(self):
-        return SQuADDataloader.SquadDataset(self.tokenized_dataset["validation"])
+        self.dev_validation_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["validation"],
+            int(len(self.validation_dataset))
+        )
 
-    def reconstruct_sentences(
-                             self,
-                             input_ids_list: List[List[int]],
-                             answers_start: List[int],
-                             answers_end: List[int]
-                             ) -> List[str]:
-        """
-        Reconstruct the sentences given a list of token ids and a span.
-        Unfortunately there is no way to do that efficiently given that spans are ragged.
 
-        :param input_ids_list
-        :param answers_start
-        :param answers_end
+        # We can't export to pytorch's tensors because we also need the answers sublist!
+        #self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'attention_mask', 'token_type_ids',
+        #                                                         'answer_start', 'answer_end'])
 
-        :returns a list of strings
-        """
 
-        answers = [input_ids[answer_start:answer_end+1] for input_ids, answer_start, answer_end 
-            in zip(input_ids_list, answers_start, answers_end)]
-
-        return self.tokenizer.decode_batch(answers)

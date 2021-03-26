@@ -17,6 +17,8 @@ extern crate log;
 
 extern crate memmap;
 
+extern crate rayon;
+
 use simple_error::SimpleError;
 
 use std::collections::HashMap;
@@ -24,13 +26,13 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::cmp::*;
-use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokenizers::models::wordpiece::WordPiece;
-use tokenizers::normalizers::bert::BertNormalizer;
-use tokenizers::pre_tokenizers::bert::BertPreTokenizer;
-use tokenizers::tokenizer::{EncodeInput, Tokenizer};
+use tokenizers::processors::bert::BertProcessing;
+use tokenizers::tokenizer::{Model, PostProcessor, Encoding};
+// use tokenizers::tokenizer::{EncodeInput};
+
 
 use pyo3::exceptions;
 use pyo3::prelude::*;
@@ -43,12 +45,16 @@ use indicatif::ProgressBar;
 
 use memmap::{Mmap};
 
+use rayon::prelude::*;
+
 #[derive(FromPyObject)]
 struct PageFormat {
     // a page identifier
     id: u32,
-    // the actual text to tokenize
-    text: String,
+
+    title: String, // TODO: find some usage for this field.
+    /// The actual pretokenized text we are going to use...
+    pretokenized_text: Vec<(String, (usize, usize))>,
     // the links as byte spans.
     // The first element is the link key, the second and third element are the
     // span of the link (in byte offsets since the beginning of the token).
@@ -195,99 +201,6 @@ fn tokenizer_cereal(_py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const PATH: &str = "/wikipedia/car-wiki2020-01-01/partitions/test_rust.cereal";
-
-    fn get_tokenizer() -> Arc<Mutex<TokenizerCereal>> {
-        let cereal_path = match std::env::var("DATA_DIR") {
-            Ok(val) => val + PATH,
-            Err(_) => "data".to_owned() + PATH
-        };
-
-        Arc::new(Mutex::new(get_default_tokenizer_helper(&cereal_path).unwrap()))
-    }
-
-    #[test]
-    fn single_slice_should_not_panic() {
-        let reqs = vec![(3273, 83), (1971, 1)]; // the firsts request is a bit suspect
-
-        let tokenizer = get_tokenizer();
-
-        for (a, b) in reqs {
-            tokenizer.lock().unwrap().get_slice(a, 128, b).unwrap();
-        }
-    }
-
-    #[test]
-    fn multithreading_should_not_panic() {
-        let reqs: Arc<Vec<(usize, usize)>> = Arc::new(vec![
-            (5500,0),
-            (4277,12),
-            (2591,38),
-            (5180,72),
-            (1942,2),
-            (5102,20),
-            (6612,44),
-            (2216,1),
-            (2239,10),
-            (1485,24),
-            (6025,18),
-            (2615,35),
-            (6876,44),
-            (6775,2),
-            (2547,28),
-            (9131,10),
-            (1442,7),
-            (9387,98),
-            (2337,34),
-            (553,48),
-            (4321,102),
-            (6641,15),
-            (928,6) ]);
-
-        let cereal_path = match std::env::var("DATA_DIR") {
-            Ok(val) => val + PATH,
-            Err(_) => "data".to_owned() + PATH
-        };
-
-        let tokenizer = get_tokenizer();
-
-        let (s, r) = crossbeam::channel::unbounded();
-
-        // let q = SegQueue::new();
-
-        let mut counter = 0;
-
-        crossbeam::scope(|scope| {
-            for ranges in reqs.chunks(5) {
-                let shared_tokenizer = tokenizer.clone();
-                let mut results: Vec<(Vec<u32>, Vec<u32>)> = vec![];
-
-                let s2 = s.clone();
-
-                scope.spawn(move |_| {
-                    for (a, b) in ranges.iter() {
-                        results.push(shared_tokenizer.lock().unwrap().get_slice(*a, 128, *b).unwrap());
-                    }
-
-                    s2.send(results).unwrap();
-                });
-            }
-
-        while counter < reqs.len() {
-            let received = r.recv().unwrap();
-            counter += received.len();
-        }
-       }).unwrap();
-
-        assert_eq!(counter, reqs.len());
-
-    }
-}
-
 cast_errors!(tokenize_from_iterator(py: Python, generator: &PyAny, output_path: &str, estimated_len: usize) -> Vec<u32>);
 
 cast_errors!(PYFUNC get_default_tokenizer(slice_path: &str) -> TokenizerCereal);
@@ -317,11 +230,18 @@ fn tokenize_from_iterator_helper(
         .build()
         .map_err(|e| simple_error_lined!(e))?;
 
+    /*
     let mut tokenizer = Tokenizer::new(Box::new(wordpiece));
     // Make lowercase, ignore the chinese character problem
     tokenizer.with_normalizer(Box::new(BertNormalizer::new(true, false, true, true)));
     tokenizer.with_pre_tokenizer(Box::new(BertPreTokenizer));
+    */
+    let postprocessor = BertProcessing::new(
+        ("[SEP]".to_owned(), 103),
+        ("[CLS]".to_owned(), 102)
+    );
 
+    
 
     // the number of articles to write at a time
     const BUFFER_SIZE : usize = 500;
@@ -349,10 +269,18 @@ fn tokenize_from_iterator_helper(
             }
         }).collect();
 
-        let inputs = page_inputs.as_slice().iter().map(|x| EncodeInput::Single(x.text.to_owned())).collect();
+        // let inputs = page_inputs.as_slice().iter().map(|x| EncodeInput::Single(x.text.to_owned())).collect();
 
-        let encodings = tokenizer.encode_batch(inputs, false)
-                                 .map_err(|e| simple_error_lined!(e))?;
+        let tokenized_inputs: Vec<Vec<(String, (usize, usize))>> = page_inputs.iter().map(|x| x.pretokenized_text.clone()).collect();
+
+        let encodings: Vec<Encoding> = tokenized_inputs.into_par_iter()
+                       .filter_map(|page_input| wordpiece.tokenize(page_input).ok())
+                       .map(|tokenized| Encoding::from_tokens(tokenized, 0))
+                       .filter_map(|encoded| postprocessor.process(encoded, None, true).ok())
+                       .collect();
+
+        //let encodings = tokenizer.encode_batch(inputs, true)
+        //                         .map_err(|e| simple_error_lined!(e))?;
 
         let page_outputs : Vec<PageFormatOutput> = encodings.iter()
             .zip(page_inputs.iter())

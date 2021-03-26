@@ -4,6 +4,7 @@ An implementation of Entities As Experts.
 
 from copy import deepcopy
 import json
+import os
 from typing import cast, Any, Optional, Tuple, Union, NamedTuple
 
 import torch
@@ -11,9 +12,13 @@ from torch.nn import Module, Dropout, Linear, CrossEntropyLoss, LayerNorm, NLLLo
     Parameter, GELU
 import torch.nn.functional as F
 from transformers import BertModel, BertConfig
+from transformers.models.bert.modeling_bert import BaseModelOutputWithPastAndCrossAttentions
 import wandb
 
+from tools.dumps import wrap_open
+
 from .device import get_available_device
+from .training import TorchScriptDumpable
 
 DEVICE = get_available_device()
 
@@ -117,13 +122,18 @@ class EntityMemory(Module):
     Entity Memory, as described in the paper
     """
 
-    def __init__(self, embedding_size: int, entity_size: int,
-                 entity_embedding_size: int):
+    def __init__(
+        self,
+        embedding_size: int,
+        entity_size: int,
+        entity_embedding_size: int,
+    ):
         """
         :param embedding_size the size of an embedding. In the EaE paper it is called d_emb, previously as d_k
             (attention_heads * embedding_per_head)
         :param entity_size also known as N in the EaE paper, the maximum number of entities we store
         :param entity_embedding_size also known as d_ent in the EaE paper, the embedding of each entity
+        :param freeze if true, freeze this module. This enforces k-nearest fetching all the time
 
         """
         super().__init__()
@@ -154,6 +164,29 @@ class EntityMemory(Module):
         end_mention -= 1
 
         return end_mention
+
+    def _get_k_nearest(
+        self,
+        pseudo_entity_embedding: torch.Tensor,
+        k: int
+    ) -> torch.Tensor:
+        # K nearest neighbours
+        # Note: the paper makes a slight notation abuse.
+        # When computing the query vector, alpha is the softmax of the topk entities
+        # When computing the loss, alpha is the softmax across the whole dictionary
+        topk = torch.topk(pseudo_entity_embedding @ self.E.weight, k, dim=1)
+
+        alpha_topk = F.softmax(topk.values, dim=1)
+
+        # mat1 has size (M x d_ent x k), mat2 has size (M x k x 1)
+        # the result has size (M x d_ent x 1). Squeeze that out and we've got our
+        # entities of size (M x d_ent).
+        picked_entity = torch.bmm(
+            self.E.weight[:, topk.indices].transpose(0, 1),
+            alpha_topk.view((-1, k, 1))).view((-1, self.d_ent))
+
+        return picked_entity
+
 
     def forward(
         self,
@@ -210,6 +243,10 @@ class EntityMemory(Module):
         pseudo_entity_embedding = self.W_f(
             mention_span)  # num_of_mentions x d_ent
 
+        # If supervised, ALWAYS compute the loss
+        #   If supervised and training, perform knn
+        # If not supervised, perform knn and do not compute the loss
+
         if is_supervised:
             alpha = F.softmax(
                 pseudo_entity_embedding.matmul(self.E.weight), dim=1)
@@ -219,26 +256,17 @@ class EntityMemory(Module):
             # Gradient-wise this should not change anything
             loss = self.loss(
                 alpha_log, entities_output[positions[0], positions[1]])
-            
-        if self.training:
-            # shape: B x d_ent
-            picked_entity = self.E(alpha)
 
+            # NOTE: self.training may be on even when the memory is frozen
+            if self.training:
+                # shape: B x d_ent
+                picked_entity = self.E(alpha)
+
+            else:
+                picked_entity = self._get_k_nearest(pseudo_entity_embedding, k)
+        
         else:
-            # K nearest neighbours
-            # Note: the paper makes a slight notation abuse.
-            # When computing the query vector, alpha is the softmax of the topk entities
-            # When computing the loss, alpha is the softmax across the whole dictionary
-            topk = torch.topk(pseudo_entity_embedding @ self.E.weight, k, dim=1)
-
-            alpha_topk = F.softmax(topk.values, dim=1)
-
-            # mat1 has size (M x d_ent x k), mat2 has size (M x k x 1)
-            # the result has size (M x d_ent x 1). Squeeze that out and we've got our
-            # entities of size (M x d_ent).
-            picked_entity = torch.bmm(
-                self.E.weight[:, topk.indices].transpose(0, 1),
-                alpha_topk.view((-1, k, 1))).view((-1, self.d_ent))
+            picked_entity = self._get_k_nearest(pseudo_entity_embedding, k)
 
         y[positions[0], positions[1]] = self.W_b(picked_entity)
 
@@ -340,12 +368,14 @@ class TokenPred(TokenPredHead):
 
 
 class EntitiesAsExpertsOutputs(NamedTuple):
-    hidden_attention: torch.Tensor
+    loss: torch.Tensor
+    last_hidden_state: torch.FloatTensor
     token_prediction_scores: torch.Tensor
     entity_prediction_scores: torch.Tensor
+    bio_logits: torch.FloatTensor
 
 
-class EntitiesAsExperts(Module):
+class EntitiesAsExperts(Module, TorchScriptDumpable):
     """
     This is the Entities As Experts implementation. Similarly to Transformers' Bert,
     task-specific heads should be built on top of this class.
@@ -357,7 +387,8 @@ class EntitiesAsExperts(Module):
             l1: int,
             entity_size: int,
             entity_embedding_size=256,
-            bert_model_variant="bert-base-uncased"
+            bert_model_variant="bert-base-uncased",
+            *args, **kwargs
     ):
         """
         :param bert_model: a pretrained bert instance that can perform Masked LM.
@@ -368,6 +399,9 @@ class EntitiesAsExperts(Module):
         :param entity_embedding_size the size of an entity embedding
         """
         super().__init__()
+
+        self.l0 = 4
+        self.l1 = 8
 
         self.bert_model_variant = bert_model_variant
 
@@ -395,8 +429,7 @@ class EntitiesAsExperts(Module):
         mention_boundaries: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         token_type_ids: Optional[torch.Tensor] = None,
-
-    ):
+    ) -> EntitiesAsExpertsOutputs:
         """
         :param input_ids the masked tokenized input of shape B x 512
         :param attention_mask the attention mask of shape B x 512
@@ -407,7 +440,7 @@ class EntitiesAsExperts(Module):
         :param return_logits if true return the scores of the token prediction and entity prediction
                heads.
 
-        :returns a triplet loss, logits (for token_pred) and output of the last transformer block
+        :returns :type EntitiesAsExpertsOutput
         """
 
         compute_loss = mention_boundaries is not None and entity_inputs is not None
@@ -418,12 +451,14 @@ class EntitiesAsExperts(Module):
                                                output_hidden_states=True)
 
         hidden_attention = first_block_outputs[0]
-        bio_loss, bio_outputs = self.bioclassifier(hidden_attention, attention_mask=attention_mask,
+        bio_loss, bio_outputs = self.bioclassifier(hidden_attention,
+                                                   attention_mask=attention_mask,
                                                    labels=mention_boundaries)
 
+        # NOTE: While using the correct bio_outputs boosts training, it also
+        # gives artificially high results during testing.
         if not compute_loss:
-            bio_choices = torch.argmax(bio_outputs, 2)
-            mention_boundaries = bio_choices
+            mention_boundaries = torch.argmax(bio_outputs, 2)
 
         entity_loss, entity_inputs = self.entity_memory(
             hidden_attention, mention_boundaries, entity_inputs)
@@ -431,44 +466,79 @@ class EntitiesAsExperts(Module):
         bert_output = self.second_block(self.layernorm(entity_inputs + hidden_attention),
                                         encoder_attention_mask=attention_mask)
 
+        last_hidden_state = bert_output.last_hidden_state
+
         token_pred_loss, token_prediction_scores = self.tokenpred(
-            bert_output.last_hidden_state, output_ids)
+            last_hidden_state, output_ids)
         entity_pred_loss, entity_prediction_scores = self.entitypred(
-            bert_output.last_hidden_state, entity_outputs)
+            last_hidden_state, entity_outputs)
 
         loss = None
 
         if compute_loss:
-            loss = entity_loss + bio_loss + token_pred_loss# + entity_pred_loss
+            loss = entity_loss + bio_loss + token_pred_loss + entity_pred_loss
 
-        return (loss, EntitiesAsExpertsOutputs(
-            bert_output,
+        return EntitiesAsExpertsOutputs(
+            loss,
+            last_hidden_state,
             token_prediction_scores,
-            entity_prediction_scores
-        ))
+            entity_prediction_scores,
+            bio_outputs
+        )
 
     @staticmethod
-    def from_pretrained(config: str, run_id: str):
+    def from_pretrained(
+        config: str,
+        run_id: str,
+        as_wandb: Optional[str] = "save",
+        checkpoint_format="pt"
+    ) -> Module:
         """
-        Load a pretrained model. Probe wandb to get the right checkpoint to use
+        Load a pretrained model.
 
         :param config the configuration to use
-        :run_id the run identifier that states where it has been saved.
+        :param run_id depends on as_wandb.
+               If as_wandb is "save" this should be the run identifier of the checkpoint to load.
+               If as_wandb is "artifact" this should be the identifier of the project.
+               If as_wandb is None this should be an absolute path leading to the folder.
+               containing the given config file.
+        :param as_wandb can be either "save", "artifact" or None. 
+        :param checkpoint_format the save format to use. Currently only h5 is supported.
         """
 
-        checkpoint_path = config + ".h5"
+        # TODO: add load support for torchscript
+        # FIXME: while we say "h5" technically these are in pytorch format
+        if checkpoint_format == "pt":
+            checkpoint_path = config + ".pt"
+        else:
+            raise NotImplementedError(f"The given format {checkpoint_format} has not been implemented")
+            
         model_config_path = config + ".json"
 
-        model_json = wandb.restore(model_config_path, run_id)
+        if as_wandb == "save":
+            model_json = wandb.restore(model_config_path, run_id)
 
-        assert model_json is not None, "Could not find the required run"
+            assert model_json is not None, "Could not find the required run"
+
+            # Someone will have to explain why W&B thinks you can only save text files
+            with wandb.restore(checkpoint_path, run_id) as checkpoint_descriptor:
+                fname = checkpoint_descriptor.name
+                checkpoint = open(fname, "rb")
+                #checkpoint = checkpoint.buffer.raw
+        elif as_wandb is None:
+            model_json = open(os.path.join(run_id, model_config_path))
+            checkpoint = open(os.path.join(run_id, checkpoint_path), "rb")
+        else:
+            # TODO
+            raise NotImplementedError(f"To implement: artifact loading")
+
         config_dict = json.load(model_json)
-        checkpoint = wandb.restore(checkpoint_path, run_id)  # type: Any
+        # FIXME: remove this once runs are fixed
+        config_dict["entity_size"] = 30550
 
         model = EntitiesAsExperts(**config_dict)
-
-        model.load_state_dict(torch.load(checkpoint.buffer.raw,
-                                         map_location=torch.device('cpu')))
+        model.load_state_dict(torch.load(checkpoint, map_location=torch.device('cpu')))
+        checkpoint.close()
 
         return model
 
@@ -477,16 +547,28 @@ class EntitiesAsExperts(Module):
         """
         A configuration dict to be used when loading or saving a model.
         """
-        # TODO: extract from the constructor
         return {
-            "l0": 4,
-            "l1": 8,
+            "l0": self.l0,
+            "l1": self.l1,
             "bert_model_variant": self.bert_model_variant,
-            "entity_size": 30703,
-            "entity_embedding_size": 256,
-            "hidden_size": self._config.hidden_size
+            "entity_size": self.entity_memory.N,
+            "entity_embedding_size": self.entity_memory.d_ent,
+
+            **vars(self._config)
         }
 
+    def generate_dummy_input(self):
+        return (torch.LongTensor([[103] * 512], device=DEVICE),
+                torch.zeros((1, 512), device=DEVICE, dtype=torch.long),
+                torch.ones((1, 512), device=DEVICE, dtype=torch.long))
+
+
+class EaEForQuestionAnsweringOutput(NamedTuple):
+    loss: Optional[torch.Tensor]
+    start_logits: torch.Tensor
+    end_logits: torch.Tensor
+    # 0: possible, 1: impossible.
+    impossible_logits: Optional[torch.Tensor]
 
 class EaEForQuestionAnswering(Module):
     """
@@ -495,16 +577,29 @@ class EaEForQuestionAnswering(Module):
     """
 
     def __init__(self,
-                 eae: EntitiesAsExperts):
+                 eae: EntitiesAsExperts,
+                 support_impossible = False):
         """
         :param pretrained_model the pretrained model.
         """
         super().__init__()
-        self.eae = eae
-        self.qa_outputs = Linear(eae.config["hidden_size"], 2)
         self.config = eae.config
+        
+        self.eae = eae
+        self.eae.training = False
+        hidden_size = eae.config["hidden_size"]
+        max_position_embeddings = eae.config["max_position_embeddings"]
+        self.qa_outputs = Linear(hidden_size, 2)
+
+        # I could not find enough information on how this works, so I am improvising...
+        # Another possibility would be to simply threshold on the logit values
+        self.support_impossible = support_impossible
+        if support_impossible:
+            self.impossible_outputs = Linear(hidden_size * max_position_embeddings, 2)
+            self.impossible_outputs_loss_fct = CrossEntropyLoss()
 
         # Freeze the entity memory
+        # This is mandated in the EaE paper
         for param_weight in self.eae.entity_memory.parameters():
             param_weight.requires_grad = False
 
@@ -515,6 +610,7 @@ class EaEForQuestionAnswering(Module):
         token_type_ids: torch.Tensor,
         start_positions: Optional[torch.Tensor],
         end_positions: Optional[torch.Tensor],
+        is_impossible: Optional[torch.Tensor]
     ) -> Tuple[Optional[torch.Tensor], torch.Tensor, torch.Tensor]:
         """
         :param input_ids the input ids
@@ -522,22 +618,31 @@ class EaEForQuestionAnswering(Module):
         :param token_type_ids to distinguish between context and question
         :param start_positions the target start positions
         :param end_positions the target end positions
+        :param is_impossible a tensor of booleans that tells if the question cannot be answered.
+               If self.support_impossible is False no impossibility check will be done and the
+               forward will invariably return False (i.e. possible).
 
         Everything else will be ignored.
 
-        :returns a triple loss, start_logits, end_logits
+        :returns loss, start_logits, end_logits, is_impossible
         """
 
         # Copycat from BertForQuestionAnswering.forward()
         # Basically a logit on 2 terms with appropriate clamping
-        _, hidden_states, *__ = self.eae(
-            input_ids, attention_mask, token_type_ids=token_type_ids)
-        logits = self.qa_outputs(hidden_states.last_hidden_state)
+        outputs = self.eae(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids
+        )
+
+        logits = self.qa_outputs(outputs.last_hidden_state)
         start_logits, end_logits = logits.split(1, dim=-1)
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
 
         total_loss = None
+        impossible_logits = torch.tile(torch.tensor([1.0, 0.0]), (input_ids.size(0), 1)).to(DEVICE)
+
         if start_positions is not None and end_positions is not None:
             # If we are on multi-GPU, split add a dimension
             if len(start_positions.size()) > 1:
@@ -552,6 +657,20 @@ class EaEForQuestionAnswering(Module):
             loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
             start_loss = loss_fct(start_logits, start_positions)
             end_loss = loss_fct(end_logits, end_positions)
-            total_loss = (start_loss + end_loss) / 2
 
-        return total_loss, start_logits, end_logits
+            if is_impossible is not None and self.support_impossible:
+                impossible_logits = self.impossible_outputs(outputs.last_hidden_state)
+                impossible_loss = self.impossible_outputs_loss_fct(possible_logits, is_possible)
+
+                total_loss = (start_loss + end_loss + impossible_loss) / 3
+
+                return EaEForQuestionAnsweringOutput(
+                    total_loss, start_logits, end_logits, impossible_logits
+                )
+            else:
+                total_loss = (start_loss + end_loss) / 2
+
+        if total_loss is not None and outputs.loss is not None:
+            total_loss += outputs.loss
+        
+        return EaEForQuestionAnsweringOutput(total_loss, start_logits, end_logits, impossible_logits)
