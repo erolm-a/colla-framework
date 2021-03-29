@@ -109,7 +109,7 @@ class WikipediaCBOR(Dataset):
         if os.path.isfile(key_file) and not clean_cache:
             with open(key_file, "rb") as pickle_cache:
                 self.offsets, self.key_titles, self.key_encoder, \
-                    self.valid_keys, self.chosen_freqs, self.blocks_per_page = pickle.load(
+                    self.chosen_freqs, self.blocks_per_page = pickle.load(
                         pickle_cache)
 
             tqdm.tqdm.write("Loaded from cache")
@@ -123,10 +123,6 @@ class WikipediaCBOR(Dataset):
 
             self.key_titles = self.extract_readable_key_titles()
             self.key_encoder = dict(zip(self.key_titles, itertools.count()))
-            self.key_encoder["PAD"] = 0  # useful for batch transforming stuff
-
-            # preprocess and find the top k unique wikipedia links
-            self.valid_keys = set(self.key_encoder.values())
 
         self.rust_cereal_path = self.partition_path + "/test_rust.cereal"
 
@@ -146,7 +142,7 @@ class WikipediaCBOR(Dataset):
 
             with open(key_file, "wb") as pickle_cache:
                 pickle.dump((self.offsets, self.key_titles, self.key_encoder,
-                             self.valid_keys, self.chosen_freqs, self.blocks_per_page), pickle_cache)
+                             self.chosen_freqs, self.blocks_per_page), pickle_cache)
 
             tqdm.tqdm.write("Cache was generated")
 
@@ -157,7 +153,6 @@ class WikipediaCBOR(Dataset):
             zip(self.chosen_freqs, range(self.max_entity_num)))
 
         self.key_decoder = dict([(b, a) for a, b in self.key_restrictor.items()])
-        self.key_titles_vec = self.extract_toc_titles()
 
         # == ITERATION CONTROL ==
         self.last_page = 0
@@ -184,7 +179,7 @@ class WikipediaCBOR(Dataset):
 
     def extract_readable_key_titles(self):
         """
-        Build a set of human-readable names of CBOR entries.
+        Build a list of human-readable names of CBOR entries.
         """
         def extract_from_key(offset):
             cbor_file.seek(offset)
@@ -209,13 +204,13 @@ class WikipediaCBOR(Dataset):
 
             raise Exception("Wrong header")
 
-        key_titles = set()
+        key_titles = ["PAD"]
 
         # If reloaded for a second time, this should be way faster.
         #with mmap.mmap(self.cbor_toc_annotations.cbor.fileno(), 0, mmap.MAP_PRIVATE) as cbor_file:
         cbor_file = self.cbor_toc_annotations.cbor
         for offset in tqdm.tqdm(self.offsets, desc="Extracting human-readable page titles"):
-            key_titles.add(extract_from_key(offset))
+            key_titles.append(extract_from_key(offset))
 
         return key_titles
 
@@ -262,12 +257,11 @@ class WikipediaCBOR(Dataset):
         spans_to_take = np.random.choice([False, True], len(spans), p=(.2, .8))
 
         for span, to_take in zip(spans, spans_to_take):
-            if to_take:
-                output_bio[span[0]] = 1
-                for i in range(span[0]+1, span[1]):
-                    output_bio[i] = 2
+            output_bio[span[0]] = 1
+            for i in range(span[0]+1, span[1]):
+                output_bio[i] = 2
 
-            else:
+            if not to_take:
                 for i in range(span[0], span[1]):
                     output_tokens[i] = 103 # [MASK] 
                     output_entities[i] = 0 # TODO allocate a special [MASK] token for links.
@@ -613,7 +607,7 @@ class WikipediaCBOR(Dataset):
         return self.process_tokenizer_output(toks, links)
 
     def decode_compressed_entity_ids(self, entity_batches: Sequence[Sequence[int]]) -> List[List[str]]:
-        return [[self.key_titles_vec[self.key_decoder.get(int(idx), 0)] for idx in batch] for batch in entity_batches]
+        return [[self.key_titles[self.key_decoder.get(int(idx), 0)] for idx in batch] for batch in entity_batches]
 
 class SQuADDataloader():
     """

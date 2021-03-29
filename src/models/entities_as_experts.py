@@ -424,7 +424,6 @@ class EntitiesAsExperts(Module, TorchScriptDumpable):
         input_ids: torch.Tensor,
         output_ids: Optional[torch.Tensor] = None,
         entity_inputs: Optional[torch.Tensor] = None,
-        # not clear if we need to perform Entity Prediction and supervise with that
         entity_outputs: Optional[torch.Tensor] = None,
         mention_boundaries: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
