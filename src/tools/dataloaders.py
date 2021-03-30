@@ -485,7 +485,7 @@ class WikipediaCBOR(Dataset):
             # TODO: revert to a function-based approach
             tokenizer = tokenizer_cereal.TokenizerCereal(self.rust_cereal_path,
                                                          map(self.preprocessing_pipeline, enumerate(
-                                                             read_data.iter_annotations(cbor_fp))),
+                                                             read_data.iter_annotations(cbor_fp), 1)),
                                                          limit)
 
         self.blocks_per_page = [int(np.ceil(length / self.token_length))
