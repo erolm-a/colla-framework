@@ -237,8 +237,8 @@ fn tokenize_from_iterator_helper(
     tokenizer.with_pre_tokenizer(Box::new(BertPreTokenizer));
     */
     let postprocessor = BertProcessing::new(
-        ("[SEP]".to_owned(), 103),
-        ("[CLS]".to_owned(), 102)
+        ("[SEP]".to_owned(), 102),
+        ("[CLS]".to_owned(), 101)
     );
 
     
