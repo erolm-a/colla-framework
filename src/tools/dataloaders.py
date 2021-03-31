@@ -448,16 +448,16 @@ class WikipediaCBOR(Dataset):
             map(lambda x: (x[0], (x[1],)), exact_mentions.items()))
         patterns = sorted(trie.search_longest_patterns(
             tokenized_text), key=lambda x: x[1])  # sort by apparition
-        patterns_across = list(sorted(self.all_pages_references.search_longest_patterns(
-            tokenized_text), key=lambda x: x[1]))
-        merged_patterns = list(
-            merge(patterns, patterns_across, key=lambda x: x[1]))
+        #patterns_across = list(sorted(self.all_pages_references.search_longest_patterns(
+        #    tokenized_text), key=lambda x: x[1]))
+        #merged_patterns = list(
+        #    merge(patterns, patterns_across, key=lambda x: x[1]))
 
         link = None
         link_idx = 0
         new_links = []
 
-        for title, idx, new_link_id, _ in merged_patterns:
+        for title, idx, new_link_id, _ in patterns:
 
             new_link = (new_link_id, idx, idx + len(title))
             # print(title, new_link)
@@ -503,10 +503,10 @@ class WikipediaCBOR(Dataset):
         """
 
         def _preprocess():
-            self.normalizer = BertNormalizer()
-            self.all_pages_references = MyRecordTrie(map(
-                lambda x: (self.normalizer.normalize_str(x[1]), (x[0],)),
-                enumerate(self.key_titles)))
+            #self.normalizer = BertNormalizer()
+            #self.all_pages_references = MyRecordTrie(map(
+            #    lambda x: (self.normalizer.normalize_str(x[1]), (x[0],)),
+            #    enumerate(self.key_titles)))
 
             with open(self.cbor_path, "rb") as cbor_fp:
                 counter = 1  # 0 is for PAD
@@ -671,11 +671,12 @@ class SQuADDataloader():
                     idx = idx.item()
                 return self.dataset[idx]
 
-    def __init__(self,
-                 max_seq_length=512,
-                 max_query_length=384,
-                 doc_stride=128,
-                 ):
+    def __init__(
+        self,
+        max_seq_length=512,
+        max_query_length=384,
+        doc_stride=128,
+    ):
         """
         Set up a Squad dataloader pipeline.
         """
