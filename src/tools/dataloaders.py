@@ -104,7 +104,9 @@ class WikipediaCBOR(Dataset):
 
         os.makedirs(self.partition_path, exist_ok=True)
         cache_path = os.path.split(self.cbor_path)[0]
-        key_file = os.path.join(cache_path, "sorted_keys.pkl")
+
+        cache_name = f"cached_{page_lim}_.pkl"
+        key_file = os.path.join(cache_path, cache_name)
 
         if os.path.isfile(key_file) and not clean_cache:
             with open(key_file, "rb") as pickle_cache:
@@ -123,7 +125,7 @@ class WikipediaCBOR(Dataset):
             self.key_titles = self.extract_readable_key_titles_new()
             self.key_encoder = dict(zip(self.key_titles, itertools.count()))
 
-        self.rust_cereal_path = self.partition_path + "/test_rust.cereal"
+        self.rust_cereal_path = self.partition_path + f"/tokenized_{page_lim}.cereal"
 
         if clean_cache or repreprocess or not os.path.exists(self.rust_cereal_path):
             self.preprocess(page_lim)
