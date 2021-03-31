@@ -33,11 +33,10 @@ from tokenizers.pre_tokenizers import Whitespace
 from transformers.data.processors import squad
 import torch
 from torch.utils.data import Dataset
-import tqdm
+from tqdm import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
 from tools.dumps import get_filename_path
-from tools.vocabs import load_tokenizer
 from tools.strings import MyRecordTrie
 
 def b2i(number_as_bytes: bytes):
@@ -82,7 +81,6 @@ class WikipediaCBOR(Dataset):
         token_length=512,
         clean_cache=False,
         repreprocess=False,
-        recount=False,
     ):
         """
         :param cbor_path the relative path of the wikipedia cbor export
@@ -92,9 +90,8 @@ class WikipediaCBOR(Dataset):
         Ties will be broken randomly.
         :param page_lim the number of pages in a partition
         :param token_length return only the first `token_length` tokens of a page.
-        :param clean_cache delete the old cache. Implies repreprocess and recount
-        :param repreprocess preprocess the text. Implies recount
-        :param recount recount the frequencies and update the top-k common entity list.
+        :param clean_cache delete the old cache. Implies repreprocess
+        :param repreprocess preprocess the text.
         """
         self.cbor_path = get_filename_path(cbor_path)
         self.partition_path = get_filename_path(partition_path)
@@ -105,64 +102,67 @@ class WikipediaCBOR(Dataset):
         os.makedirs(self.partition_path, exist_ok=True)
         cache_path = os.path.split(self.cbor_path)[0]
 
-        cache_name = f"cached_{page_lim}_.pkl"
+        cache_name = f"titles.pkl"
         key_file = os.path.join(cache_path, cache_name)
 
         if os.path.isfile(key_file) and not clean_cache:
             with open(key_file, "rb") as pickle_cache:
-                self.offsets, self.key_titles, self.key_encoder, \
-                    self.chosen_freqs = pickle.load(pickle_cache)
+                self.key_titles = pickle.load(pickle_cache)
 
-            tqdm.tqdm.write("Loaded from cache")
+            tqdm.write("Loaded from cache")
         else:
-            tqdm.tqdm.write("Generating key cache")
+            tqdm.write("Generating article title cache")
 
             self.cbor_toc_annotations = AnnotationsFile(self.cbor_path)
-            self.offsets = np.array(
+            offsets = np.array(
                 list(self.cbor_toc_annotations.toc.values()))
-            self.offsets.sort()
+            offsets.sort()
 
-            self.key_titles = self.extract_readable_key_titles_new()
-            self.key_encoder = dict(zip(self.key_titles, itertools.count()))
+            self.key_titles = self.extract_readable_key_titles_new(offsets)
+
+            with open(key_file, "wb") as pickle_cache:
+                pickle.dump(self.key_titles, pickle_cache)
+
+            tqdm.write("Cache was generated")
+
+        if page_lim < 0:
+            page_lim = len(self.key_titles)
+
+        self.key_encoder = dict(zip(self.key_titles, itertools.count()))
 
         self.rust_cereal_path = self.partition_path + f"/tokenized_{page_lim}.cereal"
 
         if clean_cache or repreprocess or not os.path.exists(self.rust_cereal_path):
+            tqdm.write("Generating cereal-ised cache")
             self.preprocess(page_lim)
 
-        if clean_cache or repreprocess or recount:
-            freqs = self.count_frequency()
-            tqdm.tqdm.write("Obtained link frequency, sorting...")
-            freqs_as_pair = list(zip(freqs.values(), freqs.keys()))
-            tqdm.tqdm.write("Sorted, filtering the most common links...")
+        # TODO: should this be in a separate cache?
+        freqs = self.count_frequency()
+        tqdm.write("Obtained link frequency, sorting...")
+        freqs_as_pair = list(zip(freqs.values(), freqs.keys()))
+        tqdm.write("Filtering by most common links...")
 
-            freqs_as_pair.sort(key=lambda x: -x[0])
-            self.chosen_freqs = freqs_as_pair[:int(
-                self.cutoff_frequency * len(freqs_as_pair))]
-            self.chosen_freqs = set(map(lambda x: x[1], self.chosen_freqs))
-
-            with open(key_file, "wb") as pickle_cache:
-                pickle.dump((self.offsets, self.key_titles, self.key_encoder,
-                             self.chosen_freqs), pickle_cache)
-
-            tqdm.tqdm.write("Cache was generated")
-
+        freqs_as_pair.sort(key=lambda x: -x[0])
+        self.chosen_freqs = freqs_as_pair[:int(
+            self.cutoff_frequency * len(freqs_as_pair))]
+        self.chosen_freqs = set(map(lambda x: x[1], self.chosen_freqs))
         # map the original "sparser" keys to a smaller set - as long as token_length in theory
 
         self.max_entity_num = len(self.chosen_freqs)
         self.key_restrictor = dict(
             zip(self.chosen_freqs, range(self.max_entity_num)))
 
-        self.key_decoder = dict([(b, a) for a, b in self.key_restrictor.items()])
+        tqdm.write("Building key decoder...")
+        self.key_decoder = {b: a for a, b in self.key_restrictor.items()}
 
-        # length
+        # == LENGTH ==
         # No, tokenizer MUST NOT be a member here due to multiprocessing issues
         # (file descriptors get shared across forks, thusing causing internal crashes)
         tokenizer = tokenizer_cereal.get_default_tokenizer(
             self.rust_cereal_path)
 
         self.blocks_per_page = [int(np.ceil(length / self.token_length))
-                                for length in self.tokenizer.article_lengths if length > 0]
+                                for length in tokenizer.article_lengths if length > 0]
 
         # == ITERATION CONTROL ==
         self.last_page = 0
@@ -185,8 +185,7 @@ class WikipediaCBOR(Dataset):
 
         return list(self.key_encoder.keys())
 
-
-    def extract_readable_key_titles(self):
+    def extract_readable_key_titles(self, offsets: List[int]):
         """
         Build a list of human-readable names of CBOR entries.
         """
@@ -218,18 +217,21 @@ class WikipediaCBOR(Dataset):
         # If reloaded for a second time, this should be way faster.
         #with mmap.mmap(self.cbor_toc_annotations.cbor.fileno(), 0, mmap.MAP_PRIVATE) as cbor_file:
         cbor_file = self.cbor_toc_annotations.cbor
-        for offset in tqdm.tqdm(self.offsets, desc="Extracting human-readable page titles"):
+        for offset in tqdm(offsets, desc="Extracting human-readable page titles"):
             key_titles.append(extract_from_key(offset))
 
         return key_titles
     
-    def extract_readable_key_titles_new(self):
+    def extract_readable_key_titles_new(
+        self,
+        offsets: List[int]
+    ) -> List[str]:
         # Yes, this is a slow and heavily inefficient implementation.
         # But it is also true we perform this only once
 
         key_titles = ["PAD"]
         with open(self.cbor_path, "rb") as f:
-            for page in tqdm.tqdm(read_data.iter_annotations(f), total=len(self.offsets), desc="Extract human-readable article titles"):
+            for page in tqdm(read_data.iter_annotations(f), total=len(offsets), desc="Extract human-readable article titles"):
                 if isinstance(page.page_type, read_data.ArticlePage):
                     key_titles.append(page.page_name)
         return key_titles
@@ -482,13 +484,10 @@ class WikipediaCBOR(Dataset):
     def preprocessing_pipeline(
         self,
         enumerated_page: Tuple[int, Page]
-    ) -> Optional[PageFormat]:
+    ) -> PageFormat:
         """
         Pipeline for preprocessing.
-        If a page is not an article return None.
         """
-        if not isinstance(enumerated_page.page_type, read_data.ArticlePage):
-            return None
         
         text, page_output = self.preprocess_page(enumerated_page)
         new_links = WikipediaCBOR.autolink(
@@ -506,17 +505,23 @@ class WikipediaCBOR(Dataset):
         :param limit process the first `limit` pages.
         """
 
-        if limit < 0:
-            limit = len(self.key_titles)
-        
-        with open(self.cbor_path, "rb") as cbor_fp:
-            # TODO: revert to a function-based approach
-            tokenizer = tokenizer_cereal.TokenizerCereal(
-                self.rust_cereal_path, filter(
-                    lambda x: x is not None, map(
-                        self.preprocessing_pipeline,
-                        enumerate(read_data.iter_annotations(cbor_fp), 1))),
-                limit)
+        def _preprocess():
+            with open(self.cbor_path, "rb") as cbor_fp:
+                counter = 1 # 0 is for PAD
+
+                annotator_iter = read_data.iter_annotations(cbor_fp)
+                while counter <= limit:
+                    try:
+                        page = next(annotator_iter)
+                        if not isinstance(page.page_type, read_data.ArticlePage):
+                            continue
+                        yield self.preprocessing_pipeline((counter, page))
+                        counter += 1
+                    except StopIteration:
+                        break
+                    
+        tokenizer = tokenizer_cereal.TokenizerCereal(
+            self.rust_cereal_path, _preprocess(), limit)
 
     def count_frequency(self) -> Dict[int, int]:
         """
