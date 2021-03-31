@@ -22,11 +22,13 @@ def get_slices(wikipedia_cbor, slices):
 
 
 def main():
-    """
+    
     wikipedia_cbor = WikipediaCBOR("wikipedia/car-wiki2020-01-01/enwiki2020.cbor",
                                     "wikipedia/car-wiki2020-01-01/partitions",
-                                    #page_lim=1000, repreprocess=True
+                                    page_lim=1000, clean_cache=True
                                     )
+
+    """
 
     bs = 64
     #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

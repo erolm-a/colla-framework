@@ -177,6 +177,10 @@ class WikipediaCBOR(Dataset):
         self.cumulated_block_size = np.cumsum(self.blocks_per_page)
         self.length = self.cumulated_block_size[-1]
 
+        # UTILS
+        self.normalizer = BertNormalizer()
+        self.splitter = Whitespace()
+
     def __len__(self):
         return self.length
 
@@ -312,10 +316,6 @@ class WikipediaCBOR(Dataset):
         prev_body = ""
         links = []
 
-        normalizer = BertNormalizer()
-        splitter = Whitespace()
-        # splitter = 0
-
         # Encode a link. Cast to padding if the link was not "common".
         # Call this method only after preprocessing has been done!
         def encode_link(link):
@@ -345,8 +345,8 @@ class WikipediaCBOR(Dataset):
             nonlocal prev_body
             cur_body = body.get_text()
 
-            split_body = splitter.pre_tokenize_str(
-                normalizer.normalize_str(cur_body))
+            split_body = self.splitter.pre_tokenize_str(
+                self.normalizer.normalize_str(cur_body))
             #print('from handle_paratext: "' + body.get_text() + '"')
 
             # take care of the space...
@@ -375,8 +375,8 @@ class WikipediaCBOR(Dataset):
             encoded_link = encode_link(body.page)
             cur_body = body.get_text()
 
-            split_body = splitter.pre_tokenize_str(
-                normalizer.normalize_str(cur_body))
+            split_body = self.splitter.pre_tokenize_str(
+                self.normalizer.normalize_str(cur_body))
             #print('from handle_paralink: "' + body.get_text() + '"')
 
             running_prefix = 0
@@ -386,13 +386,14 @@ class WikipediaCBOR(Dataset):
 
             orig_page_content.write(cur_body)
 
-            split_body = [(text, (begin_offset + running_prefix,
-                                  end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+            split_body = [(text,
+                (begin_offset + running_prefix, end_offset + running_prefix)) \
+                    for text, (begin_offset, end_offset) in split_body]
 
             split_content.extend(split_body)
 
             if len(split_body) > 0:
-                end_byte_span = split_body[-1][1][1] - 1
+                # end_byte_span = split_body[-1][1][1] - 1
                 start_mention_idx = len(split_content) - len(split_body)
                 links.append(
                     (encoded_link, start_mention_idx, len(split_content)))
@@ -503,7 +504,6 @@ class WikipediaCBOR(Dataset):
         """
 
         def _preprocess():
-            #self.normalizer = BertNormalizer()
             #self.all_pages_references = MyRecordTrie(map(
             #    lambda x: (self.normalizer.normalize_str(x[1]), (x[0],)),
             #    enumerate(self.key_titles)))
