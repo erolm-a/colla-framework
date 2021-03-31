@@ -101,6 +101,10 @@ class WikipediaCBOR(Dataset):
         self.token_length = token_length
         self.tokenizer = None
 
+        # UTILS
+        self.normalizer = BertNormalizer()
+        self.splitter = Whitespace()
+
         os.makedirs(self.partition_path, exist_ok=True)
         cache_path = os.path.split(self.cbor_path)[0]
 
@@ -176,10 +180,6 @@ class WikipediaCBOR(Dataset):
 
         self.cumulated_block_size = np.cumsum(self.blocks_per_page)
         self.length = self.cumulated_block_size[-1]
-
-        # UTILS
-        self.normalizer = BertNormalizer()
-        self.splitter = Whitespace()
 
     def __len__(self):
         return self.length
