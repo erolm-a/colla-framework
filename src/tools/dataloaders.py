@@ -433,7 +433,7 @@ class WikipediaCBOR(Dataset):
         exact_mentions = {}
 
         # TODO: deal with ambiguities...
-        exact_mentions[title] = self.normalizer.normalize_str(page_id)
+        exact_mentions[self.normalizer.normalize_str(title)] = page_id
 
         remapped_links = []
         for link in links:
@@ -449,10 +449,10 @@ class WikipediaCBOR(Dataset):
             map(lambda x: (x[0], (x[1],)), exact_mentions.items()))
         patterns = sorted(trie.search_longest_patterns(
             tokenized_text), key=lambda x: x[1])  # sort by apparition
-        #patterns_across = list(sorted(self.all_pages_references.search_longest_patterns(
-        #    tokenized_text), key=lambda x: x[1]))
-        #merged_patterns = list(
-        #    merge(patterns, patterns_across, key=lambda x: x[1]))
+        patterns_across = list(sorted(self.all_pages_references.search_longest_patterns(
+            tokenized_text), key=lambda x: x[1]))
+        merged_patterns = list(
+            merge(patterns, patterns_across, key=lambda x: x[1]))
 
         link = None
         link_idx = 0
@@ -504,9 +504,9 @@ class WikipediaCBOR(Dataset):
         """
 
         def _preprocess():
-            #self.all_pages_references = MyRecordTrie(map(
-            #    lambda x: (self.normalizer.normalize_str(x[1]), (x[0],)),
-            #    enumerate(self.key_titles)))
+            self.all_pages_references = MyRecordTrie(map(
+                lambda x: (self.normalizer.normalize_str(x[1]), (x[0],)),
+                enumerate(self.key_titles)))
 
             with open(self.cbor_path, "rb") as cbor_fp:
                 counter = 1  # 0 is for PAD
