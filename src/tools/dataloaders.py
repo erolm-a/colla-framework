@@ -153,6 +153,15 @@ class WikipediaCBOR(Dataset):
 
         self.key_decoder = dict([(b, a) for a, b in self.key_restrictor.items()])
 
+        # length
+        # No, tokenizer MUST NOT be a member here due to multiprocessing issues
+        # (file descriptors get shared across forks, thusing causing internal crashes)
+        tokenizer = tokenizer_cereal.get_default_tokenizer(
+            self.rust_cereal_path)
+
+        self.blocks_per_page = [int(np.ceil(length / self.token_length))
+                                for length in self.tokenizer.article_lengths if length > 0]
+
         # == ITERATION CONTROL ==
         self.last_page = 0
         self.last_block = 0
@@ -160,7 +169,6 @@ class WikipediaCBOR(Dataset):
         self.end_page_idx = len(self.blocks_per_page)
         self.cur_block = 0
 
-        # length
         self.cumulated_block_size = np.cumsum(self.blocks_per_page)
         self.length = self.cumulated_block_size[-1]
 
@@ -584,9 +592,6 @@ class WikipediaCBOR(Dataset):
             self.tokenizer = tokenizer_cereal.get_default_tokenizer(
                 self.rust_cereal_path)
             
-            self.blocks_per_page = [int(np.ceil(length / self.token_length))
-                                    for length in self.tokenizer.article_lengths if length > 0]
-
         while self.start_page_idx < self.end_page_idx:
             page_lim = self.blocks_per_page[self.start_page_idx]
 
