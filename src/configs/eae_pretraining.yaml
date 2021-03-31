@@ -1,7 +1,7 @@
 # EaE Section
 pretraining_epochs:
   desc: Number of epochs while pretraining
-  value: 5
+  value: 10
 wikipedia_article_nums:
   desc: Number of wikipedia pages to preprocess (DEBUG)
   value: 100000
@@ -10,7 +10,7 @@ batch_size:
   value: 4
 wikipedia_cutoff_frequency:
   desc: Cutoff frequency for the most commonentities. 0.05 = 5% of the mentions on Wikipedia (taking the most common ones)
-  value: 0.03
+  value: 0.10
 gradient_accum_size:
   desc: Gradient accumulator multiplier
   value: 8

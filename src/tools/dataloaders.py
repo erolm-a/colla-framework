@@ -33,12 +33,12 @@ from tokenizers.pre_tokenizers import Whitespace
 from transformers.data.processors import squad
 import torch
 from torch.utils.data import Dataset
-import tqdm
+from tqdm import tqdm
 from keras.preprocessing.sequence import pad_sequences
 
 from tools.dumps import get_filename_path
-from tools.vocabs import load_tokenizer
 from tools.strings import MyRecordTrie
+
 
 def b2i(number_as_bytes: bytes):
     """
@@ -51,6 +51,7 @@ def b2i(number_as_bytes: bytes):
 Token = NewType("Token", Tuple[str, Tuple[int, int]])
 TokenizedText = NewType("TokenizedText", List[Token])
 Link = NewType("Link", Tuple[int, int, int])
+
 
 class PageFormat(NamedTuple):
     id: int
@@ -82,7 +83,6 @@ class WikipediaCBOR(Dataset):
         token_length=512,
         clean_cache=False,
         repreprocess=False,
-        recount=False,
     ):
         """
         :param cbor_path the relative path of the wikipedia cbor export
@@ -92,9 +92,8 @@ class WikipediaCBOR(Dataset):
         Ties will be broken randomly.
         :param page_lim the number of pages in a partition
         :param token_length return only the first `token_length` tokens of a page.
-        :param clean_cache delete the old cache. Implies repreprocess and recount
-        :param repreprocess preprocess the text. Implies recount
-        :param recount recount the frequencies and update the top-k common entity list.
+        :param clean_cache delete the old cache. Implies repreprocess
+        :param repreprocess preprocess the text.
         """
         self.cbor_path = get_filename_path(cbor_path)
         self.partition_path = get_filename_path(partition_path)
@@ -104,60 +103,69 @@ class WikipediaCBOR(Dataset):
 
         os.makedirs(self.partition_path, exist_ok=True)
         cache_path = os.path.split(self.cbor_path)[0]
-        key_file = os.path.join(cache_path, "sorted_keys.pkl")
+
+        cache_name = f"titles.pkl"
+        key_file = os.path.join(cache_path, cache_name)
 
         if os.path.isfile(key_file) and not clean_cache:
             with open(key_file, "rb") as pickle_cache:
-                self.offsets, self.key_titles, self.key_encoder, \
-                    self.valid_keys, self.chosen_freqs, self.blocks_per_page = pickle.load(
-                        pickle_cache)
+                self.key_titles = pickle.load(pickle_cache)
 
-            tqdm.tqdm.write("Loaded from cache")
+            tqdm.write("Loaded from cache")
         else:
-            tqdm.tqdm.write("Generating key cache")
+            tqdm.write("Generating article title cache")
 
             self.cbor_toc_annotations = AnnotationsFile(self.cbor_path)
-            self.offsets = np.array(
+            offsets = np.array(
                 list(self.cbor_toc_annotations.toc.values()))
-            self.offsets.sort()
+            offsets.sort()
 
-            self.key_titles = self.extract_readable_key_titles()
-            self.key_encoder = dict(zip(self.key_titles, itertools.count()))
-            self.key_encoder["PAD"] = 0  # useful for batch transforming stuff
-
-            # preprocess and find the top k unique wikipedia links
-            self.valid_keys = set(self.key_encoder.values())
-
-        self.rust_cereal_path = self.partition_path + "/test_rust.cereal"
-
-        if clean_cache or repreprocess or not os.path.exists(self.rust_cereal_path):
-            self.preprocess(page_lim)
-
-        if clean_cache or repreprocess or recount:
-            freqs = self.count_frequency()
-            tqdm.tqdm.write("Obtained link frequency, sorting...")
-            freqs_as_pair = list(zip(freqs.values(), freqs.keys()))
-            tqdm.tqdm.write("Sorted, filtering the most common links...")
-
-            freqs_as_pair.sort(key=lambda x: -x[0])
-            self.chosen_freqs = freqs_as_pair[:int(
-                self.cutoff_frequency * len(freqs_as_pair))]
-            self.chosen_freqs = set(map(lambda x: x[1], self.chosen_freqs))
+            self.key_titles = self.extract_readable_key_titles_new(offsets)
 
             with open(key_file, "wb") as pickle_cache:
-                pickle.dump((self.offsets, self.key_titles, self.key_encoder,
-                             self.valid_keys, self.chosen_freqs, self.blocks_per_page), pickle_cache)
+                pickle.dump(self.key_titles, pickle_cache)
 
-            tqdm.tqdm.write("Cache was generated")
+            tqdm.write("Cache was generated")
 
+        if page_lim < 0:
+            page_lim = len(self.key_titles)
+
+        self.key_encoder = dict(zip(self.key_titles, itertools.count()))
+
+        self.rust_cereal_path = self.partition_path + \
+            f"/tokenized_{page_lim}.cereal"
+
+        if clean_cache or repreprocess or not os.path.exists(self.rust_cereal_path):
+            tqdm.write("Generating cereal-ised cache")
+            self.preprocess(page_lim)
+
+        # TODO: should this be in a separate cache?
+        freqs = self.count_frequency()
+        tqdm.write("Obtained link frequency, sorting...")
+        freqs_as_pair = list(zip(freqs.values(), freqs.keys()))
+        tqdm.write("Filtering by most common links...")
+
+        freqs_as_pair.sort(key=lambda x: -x[0])
+        self.chosen_freqs = freqs_as_pair[:int(
+            self.cutoff_frequency * len(freqs_as_pair))]
+        self.chosen_freqs = set(map(lambda x: x[1], self.chosen_freqs))
         # map the original "sparser" keys to a smaller set - as long as token_length in theory
 
         self.max_entity_num = len(self.chosen_freqs)
         self.key_restrictor = dict(
             zip(self.chosen_freqs, range(self.max_entity_num)))
 
-        self.key_decoder = dict([(b, a) for a, b in self.key_restrictor.items()])
-        self.key_titles_vec = self.extract_toc_titles()
+        tqdm.write("Building key decoder...")
+        self.key_decoder = {b: a for a, b in self.key_restrictor.items()}
+
+        # == LENGTH ==
+        # No, tokenizer MUST NOT be a member here due to multiprocessing issues
+        # (file descriptors get shared across forks, thusing causing internal crashes)
+        tokenizer = tokenizer_cereal.get_default_tokenizer(
+            self.rust_cereal_path)
+
+        self.blocks_per_page = [int(np.ceil(length / self.token_length))
+                                for length in tokenizer.article_lengths if length > 0]
 
         # == ITERATION CONTROL ==
         self.last_page = 0
@@ -166,14 +174,12 @@ class WikipediaCBOR(Dataset):
         self.end_page_idx = len(self.blocks_per_page)
         self.cur_block = 0
 
-        # length
         self.cumulated_block_size = np.cumsum(self.blocks_per_page)
         self.length = self.cumulated_block_size[-1]
 
-
     def __len__(self):
         return self.length
-    
+
     def extract_toc_titles(self) -> List[str]:
         """
         Extract a list of titles from the ToC.
@@ -181,10 +187,9 @@ class WikipediaCBOR(Dataset):
 
         return list(self.key_encoder.keys())
 
-
-    def extract_readable_key_titles(self):
+    def extract_readable_key_titles(self, offsets: List[int]):
         """
-        Build a set of human-readable names of CBOR entries.
+        Build a list of human-readable names of CBOR entries.
         """
         def extract_from_key(offset):
             cbor_file.seek(offset)
@@ -209,14 +214,28 @@ class WikipediaCBOR(Dataset):
 
             raise Exception("Wrong header")
 
-        key_titles = set()
+        key_titles = ["PAD"]
 
         # If reloaded for a second time, this should be way faster.
         #with mmap.mmap(self.cbor_toc_annotations.cbor.fileno(), 0, mmap.MAP_PRIVATE) as cbor_file:
         cbor_file = self.cbor_toc_annotations.cbor
-        for offset in tqdm.tqdm(self.offsets, desc="Extracting human-readable page titles"):
-            key_titles.add(extract_from_key(offset))
+        for offset in tqdm(offsets, desc="Extracting human-readable page titles"):
+            key_titles.append(extract_from_key(offset))
 
+        return key_titles
+
+    def extract_readable_key_titles_new(
+        self,
+        offsets: List[int]
+    ) -> List[str]:
+        # Yes, this is a slow and heavily inefficient implementation.
+        # But it is also true we perform this only once
+
+        key_titles = ["PAD"]
+        with open(self.cbor_path, "rb") as f:
+            for page in tqdm(read_data.iter_annotations(f), total=len(offsets), desc="Extract human-readable article titles"):
+                if isinstance(page.page_type, read_data.ArticlePage):
+                    key_titles.append(page.page_name)
         return key_titles
 
     @staticmethod
@@ -262,15 +281,15 @@ class WikipediaCBOR(Dataset):
         spans_to_take = np.random.choice([False, True], len(spans), p=(.2, .8))
 
         for span, to_take in zip(spans, spans_to_take):
-            if to_take:
-                output_bio[span[0]] = 1
-                for i in range(span[0]+1, span[1]):
-                    output_bio[i] = 2
+            output_bio[span[0]] = 1
+            for i in range(span[0]+1, span[1]):
+                output_bio[i] = 2
 
-            else:
+            if not to_take:
                 for i in range(span[0], span[1]):
-                    output_tokens[i] = 103 # [MASK] 
-                    output_entities[i] = 0 # TODO allocate a special [MASK] token for links.
+                    output_tokens[i] = 103  # [MASK]
+                    # TODO allocate a special [MASK] token for links.
+                    output_entities[i] = 0
         return output_tokens, output_entities, output_bio
 
     def preprocess_page(
@@ -326,21 +345,22 @@ class WikipediaCBOR(Dataset):
             nonlocal prev_body
             cur_body = body.get_text()
 
-            split_body = splitter.pre_tokenize_str(normalizer.normalize_str(cur_body))
+            split_body = splitter.pre_tokenize_str(
+                normalizer.normalize_str(cur_body))
             #print('from handle_paratext: "' + body.get_text() + '"')
 
             # take care of the space...
             running_prefix = 0
             current_page_length = prev_page_length + len(cur_body)
             if len(split_content) > 0:
-                running_prefix = prev_page_length #split_content[-1][1][1]
+                running_prefix = prev_page_length  # split_content[-1][1][1]
 
             orig_page_content.write(cur_body)
 
             #print(f"After skipping: {orig_page_content.getvalue()[running_prefix:]}")
 
             split_body = [(text, (begin_offset + running_prefix,
-                                    end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+                                  end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
 
             # print(split_body)
 
@@ -355,7 +375,8 @@ class WikipediaCBOR(Dataset):
             encoded_link = encode_link(body.page)
             cur_body = body.get_text()
 
-            split_body = splitter.pre_tokenize_str(normalizer.normalize_str(cur_body))
+            split_body = splitter.pre_tokenize_str(
+                normalizer.normalize_str(cur_body))
             #print('from handle_paralink: "' + body.get_text() + '"')
 
             running_prefix = 0
@@ -364,16 +385,17 @@ class WikipediaCBOR(Dataset):
                 running_prefix = prev_page_length
 
             orig_page_content.write(cur_body)
- 
+
             split_body = [(text, (begin_offset + running_prefix,
-                                    end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
+                                  end_offset + running_prefix)) for text, (begin_offset, end_offset) in split_body]
 
             split_content.extend(split_body)
 
             if len(split_body) > 0:
                 end_byte_span = split_body[-1][1][1] - 1
                 start_mention_idx = len(split_content) - len(split_body)
-                links.append((encoded_link, start_mention_idx, len(split_content)))
+                links.append(
+                    (encoded_link, start_mention_idx, len(split_content)))
 
             #for tok, (begin, end) in split_body:
             #    assert tok == orig_page_content.getvalue()[begin:end], f"generated {orig_page_content.getvalue()[begin:end]} but expected {tok}"
@@ -398,23 +420,19 @@ class WikipediaCBOR(Dataset):
             visit_section(skel)
 
         return orig_page_content.getvalue(), PageFormat(id, page.page_name, split_content, links)
-    
-    @staticmethod
+
     def autolink(
+        self,
         page_id: int,
         title: str,
         text: str,
         tokenized_text: TokenizedText,
         links: List[Link]
     ) -> List[Link]:
-        link_idx = 0
-
         exact_mentions = {}
 
         # TODO: deal with ambiguities...
-        exact_mentions[title] = page_id
-
-        #print(exact_mentions)
+        exact_mentions[title] = self.normalizer.normalize_str(page_id)
 
         remapped_links = []
         for link in links:
@@ -422,34 +440,31 @@ class WikipediaCBOR(Dataset):
             start_byte = tokenized_text[link[1]][1][0]
             end_byte = tokenized_text[link[2]-1][1][1]
 
-            #print(text[start_byte:end_byte])
-
-            exact_mentions[text[start_byte:end_byte]] = link[0]
+            exact_mentions[self.normalizer.normalize_str(
+                text[start_byte:end_byte])] = link[0]
             remapped_links.append((link[0], start_byte, end_byte))
-        
 
-        #print(list(map(lambda x: (x[0], (x[1],)), exact_mentions.items())))
-
-        trie = MyRecordTrie(map(lambda x: (x[0], (x[1],)), exact_mentions.items()))
-
-        #print(trie.keys())
-
-        # print(trie.items())
-        patterns = sorted(trie.search_longest_patterns(tokenized_text), key=lambda x: x[1]) # sort by apparition
-
+        trie = MyRecordTrie(
+            map(lambda x: (x[0], (x[1],)), exact_mentions.items()))
+        patterns = sorted(trie.search_longest_patterns(
+            tokenized_text), key=lambda x: x[1])  # sort by apparition
+        patterns_across = list(sorted(self.all_pages_references.search_longest_patterns(
+            tokenized_text), key=lambda x: x[1]))
+        merged_patterns = list(
+            merge(patterns, patterns_across, key=lambda x: x[1]))
 
         link = None
         link_idx = 0
         new_links = []
-        
-        for title, idx, new_link_id, _ in patterns:
-            
+
+        for title, idx, new_link_id, _ in merged_patterns:
+
             new_link = (new_link_id, idx, idx + len(title))
             # print(title, new_link)
 
             if link_idx < len(remapped_links):
                 link = remapped_links[link_idx]
-            
+
             while link_idx < len(remapped_links) - 1 and idx > link[2]:
                 link_idx += 1
                 link = remapped_links[link_idx]
@@ -457,26 +472,26 @@ class WikipediaCBOR(Dataset):
 
             if link_idx >= len(remapped_links):
                 link = None
-            
+
             if link is None or idx < link[1]:
                 new_links.append(new_link)
-                #print(title, new_link)
-            else:
-                #print("Found existing link",  link)
-                #print("Compare with: ", new_link)
-                pass
-        
-        # print(f"The page has {len(remapped_links)} links by default")
-        # print("Added new ", len(new_links), "links")
+
         return list(merge(remapped_links, new_links, key=lambda x: x[1]))
 
-    def preprocessing_pipeline(self, enumerated_page: Tuple[int, Page]):
+    def preprocessing_pipeline(
+        self,
+        enumerated_page: Tuple[int, Page]
+    ) -> PageFormat:
+        """
+        Pipeline for preprocessing.
+        """
+
         text, page_output = self.preprocess_page(enumerated_page)
-        new_links = WikipediaCBOR.autolink(
-            page_output.id,page_output.title,
+        new_links = self.autolink(
+            page_output.id, page_output.title,
             text, page_output.pretokenized_text,
             page_output.link_mentions)
-        
+
         return PageFormat(page_output.id, page_output.title, page_output.pretokenized_text, new_links)
 
     def preprocess(self, limit: int):
@@ -487,15 +502,28 @@ class WikipediaCBOR(Dataset):
         :param limit process the first `limit` pages.
         """
 
-        with open(self.cbor_path, "rb") as cbor_fp:
-            # TODO: revert to a function-based approach
-            tokenizer = tokenizer_cereal.TokenizerCereal(self.rust_cereal_path,
-                                                         map(self.preprocessing_pipeline, enumerate(
-                                                             read_data.iter_annotations(cbor_fp))),
-                                                         limit)
+        def _preprocess():
+            self.normalizer = BertNormalizer()
+            self.all_pages_references = MyRecordTrie(map(
+                lambda x: (self.normalizer.normalize_str(x[1]), (x[0],)),
+                enumerate(self.key_titles)))
 
-        self.blocks_per_page = [int(np.ceil(length / self.token_length))
-                                for length in tokenizer.article_lengths if length > 0]
+            with open(self.cbor_path, "rb") as cbor_fp:
+                counter = 1  # 0 is for PAD
+
+                annotator_iter = read_data.iter_annotations(cbor_fp)
+                while counter <= limit:
+                    try:
+                        page = next(annotator_iter)
+                        if not isinstance(page.page_type, read_data.ArticlePage):
+                            continue
+                        yield self.preprocessing_pipeline((counter, page))
+                        counter += 1
+                    except StopIteration:
+                        break
+
+        tokenizer_cereal.TokenizerCereal(
+            self.rust_cereal_path, _preprocess(), limit)
 
     def count_frequency(self) -> Dict[int, int]:
         """
@@ -529,7 +557,7 @@ class WikipediaCBOR(Dataset):
 
         if page_block_nums == 0:
             page_idx = 0
-            block_offset = 0 
+            block_offset = 0
 
         return page_idx, block_offset
 
@@ -587,7 +615,6 @@ class WikipediaCBOR(Dataset):
                                      self.token_length: (self.cur_block + 1)*self.token_length]
             links = self.last_page[1][self.cur_block *
                                       self.token_length: (self.cur_block + 1)*self.token_length]
-            
 
             masked_toks, toks, masked_links, links, masked_bio, attns = \
                 self.process_tokenizer_output(toks, links)
@@ -595,7 +622,7 @@ class WikipediaCBOR(Dataset):
             self.cur_block += 1
 
             yield (masked_toks, toks, masked_links, links, masked_bio, attns)
-    
+
     def __getitem__(self, idx):
         """
         Provide an interface for a map-style, O(log(N)) approach for accessing a random block
@@ -608,12 +635,13 @@ class WikipediaCBOR(Dataset):
         page_idx, block_offset = self.convert_idx_to_page_block(idx)
 
         toks, links = self.tokenizer.get_slice(page_idx, block_offset,
-                            self.token_length)
-        
+                                               self.token_length)
+
         return self.process_tokenizer_output(toks, links)
 
     def decode_compressed_entity_ids(self, entity_batches: Sequence[Sequence[int]]) -> List[List[str]]:
-        return [[self.key_titles_vec[self.key_decoder.get(int(idx), 0)] for idx in batch] for batch in entity_batches]
+        return [[self.key_titles[self.key_decoder.get(int(idx), 0)] for idx in batch] for batch in entity_batches]
+
 
 class SQuADDataloader():
     """
@@ -630,10 +658,10 @@ class SQuADDataloader():
         ):
             self.dataset = dataset
             self.length = custom_len if custom_len else len(self.dataset)
-        
+
         def __len__(self):
             return self.length
-        
+
         def __getitem__(self, idx):
             if type(idx) == list or type(idx) == torch.tensor:
                 return [self.dataset[i] for i in idx]
@@ -644,11 +672,10 @@ class SQuADDataloader():
                 return self.dataset[idx]
 
     def __init__(self,
-        max_seq_length=512,
-        max_query_length=384,
-        doc_stride=128,
-        
-    ):
+                 max_seq_length=512,
+                 max_query_length=384,
+                 doc_stride=128,
+                 ):
         """
         Set up a Squad dataloader pipeline.
         """
@@ -657,7 +684,8 @@ class SQuADDataloader():
         # TODO: Deprecate vocabs.py
         # self.tokenizer = load_tokenizer('bert-base-uncased')
 
-        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=False)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "bert-base-uncased", use_fast=False)
         self.dataset = datasets.load_dataset("squad")
 
         squad.squad_convert_example_to_features_init(self.tokenizer)
@@ -704,60 +732,35 @@ class SQuADDataloader():
             # In case of split context create singleton lists.
             result = pd.DataFrame([vars(feature) for feature in features])
             result_dropped = result.drop(["example_index", "token_is_max_context",
-                                  "encoding", "token_to_orig_map", "cls_index", "paragraph_len",
-                                  "unique_id"], axis=1)
-            
+                                          "encoding", "token_to_orig_map", "cls_index", "paragraph_len",
+                                          "unique_id"], axis=1)
+
             # the HF processor silently removes problematic rows. In this case we have no choice but
-            # to add singletons for now and filter them out later 
-        
-            result_grouped = result_dropped.groupby("qas_id", as_index=False).agg(list)
+            # to add singletons for now and filter them out later
 
-            """
-            qas_id_set = set(qas_id)
-            example_qas_id_set = set(result_grouped["qas_id"])
-            diff_set = qas_id_set - example_qas_id_set
+            result_grouped = result_dropped.groupby(
+                "qas_id", as_index=False).agg(list)
 
-            result_cols = ["qas_id", "input_ids", "attention_mask", "token_type_ids",
-                             "p_mask", "tokens", "start_position", "end_position", "is_impossible"]
-            
-            dummy_records = [(qa_id, [], [], [], [], [], [], [], []) for qa_id in diff_set]
-            #dummy_records = [(qa_id, [], [], [], [], [],  [-1], [-1], [True]) for qa_id in diff_set]
-            dummy_df = pd.concat([pd.DataFrame(dummy_records, columns=result_cols)],
-                                  ignore_index=True)
-            
-            result_grouped = result_grouped.append(dummy_df, ignore_index=True)
-            """
             result_grouped = examples_pd.set_index("id").join(
                 result_grouped.set_index("qas_id"),
                 how="left"
             ).reset_index()
 
             result_as_dict = result_grouped.to_dict()
-            
 
             result = {}
 
             for k, v in result_as_dict.items():
                 values = list(v.values())
                 for i in range(len(values)):
-                    if values[i] != values[i]: # NaN:
+                    if values[i] != values[i]:  # NaN:
                         values[i] = []
                 result[k] = values
 
-            """
-            if len(result["attention_mask"]) != len(qas_id):
-                print("Mismatch detected! The pipeline will fail shortly! Dumping a dataloader into \"squad_dataloader_failure.pandas.pkl\".")
-                result_dropped.to_pickle("squad_dataloader_failure.pandas.pkl")
-                result_grouped.to_pickle("squad_dataloader_failure.pandas_grouped.pkl")
-            #pprint.pprint(result)
-
-            """
             return result
 
-            
         self.tokenized_dataset = self.dataset.map(encode, batched=True) \
-                                                    .filter(lambda example: len(example["input_ids"]) > 0)
-        
+            .filter(lambda example: len(example["input_ids"]) > 0)
 
         # Ready-to-use datasets, compatible with samplers if needed.
         self.train_dataset = SQuADDataloader.SquadDataset(
@@ -775,9 +778,6 @@ class SQuADDataloader():
             int(len(self.validation_dataset))
         )
 
-
         # We can't export to pytorch's tensors because we also need the answers sublist!
         #self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'attention_mask', 'token_type_ids',
         #                                                         'answer_start', 'answer_end'])
-
-
