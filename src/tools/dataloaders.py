@@ -109,8 +109,7 @@ class WikipediaCBOR(Dataset):
         if os.path.isfile(key_file) and not clean_cache:
             with open(key_file, "rb") as pickle_cache:
                 self.offsets, self.key_titles, self.key_encoder, \
-                    self.chosen_freqs, self.blocks_per_page = pickle.load(
-                        pickle_cache)
+                    self.chosen_freqs = pickle.load(pickle_cache)
 
             tqdm.tqdm.write("Loaded from cache")
         else:
@@ -121,7 +120,7 @@ class WikipediaCBOR(Dataset):
                 list(self.cbor_toc_annotations.toc.values()))
             self.offsets.sort()
 
-            self.key_titles = self.extract_readable_key_titles()
+            self.key_titles = self.extract_readable_key_titles_new()
             self.key_encoder = dict(zip(self.key_titles, itertools.count()))
 
         self.rust_cereal_path = self.partition_path + "/test_rust.cereal"
@@ -142,7 +141,7 @@ class WikipediaCBOR(Dataset):
 
             with open(key_file, "wb") as pickle_cache:
                 pickle.dump((self.offsets, self.key_titles, self.key_encoder,
-                             self.chosen_freqs, self.blocks_per_page), pickle_cache)
+                             self.chosen_freqs), pickle_cache)
 
             tqdm.tqdm.write("Cache was generated")
 
@@ -212,6 +211,17 @@ class WikipediaCBOR(Dataset):
         for offset in tqdm.tqdm(self.offsets, desc="Extracting human-readable page titles"):
             key_titles.append(extract_from_key(offset))
 
+        return key_titles
+    
+    def extract_readable_key_titles_new(self):
+        # Yes, this is a slow and heavily inefficient implementation.
+        # But it is also true we perform this only once
+
+        key_titles = ["PAD"]
+        with open(self.cbor_path, "rb") as f:
+            for page in tqdm.tqdm(read_data.iter_annotations(f), total=len(self.offsets), desc="Extract human-readable article titles"):
+                if isinstance(page.page_type, read_data.ArticlePage):
+                    key_titles.append(page.page_name)
         return key_titles
 
     @staticmethod
@@ -401,14 +411,11 @@ class WikipediaCBOR(Dataset):
         tokenized_text: TokenizedText,
         links: List[Link]
     ) -> List[Link]:
-        link_idx = 0
-
         exact_mentions = {}
+        normalizer = BertNormalizer()
 
         # TODO: deal with ambiguities...
         exact_mentions[title] = page_id
-
-        #print(exact_mentions)
 
         remapped_links = []
         for link in links:
@@ -416,9 +423,7 @@ class WikipediaCBOR(Dataset):
             start_byte = tokenized_text[link[1]][1][0]
             end_byte = tokenized_text[link[2]-1][1][1]
 
-            #print(text[start_byte:end_byte])
-
-            exact_mentions[text[start_byte:end_byte]] = link[0]
+            exact_mentions[normalizer.normalize_str(text[start_byte:end_byte])] = link[0]
             remapped_links.append((link[0], start_byte, end_byte))
         
 
@@ -464,7 +469,17 @@ class WikipediaCBOR(Dataset):
         # print("Added new ", len(new_links), "links")
         return list(merge(remapped_links, new_links, key=lambda x: x[1]))
 
-    def preprocessing_pipeline(self, enumerated_page: Tuple[int, Page]):
+    def preprocessing_pipeline(
+        self,
+        enumerated_page: Tuple[int, Page]
+    ) -> Optional[PageFormat]:
+        """
+        Pipeline for preprocessing.
+        If a page is not an article return None.
+        """
+        if not isinstance(enumerated_page.page_type, read_data.ArticlePage):
+            return None
+        
         text, page_output = self.preprocess_page(enumerated_page)
         new_links = WikipediaCBOR.autolink(
             page_output.id,page_output.title,
@@ -481,15 +496,17 @@ class WikipediaCBOR(Dataset):
         :param limit process the first `limit` pages.
         """
 
+        if limit < 0:
+            limit = len(self.key_titles)
+        
         with open(self.cbor_path, "rb") as cbor_fp:
             # TODO: revert to a function-based approach
-            tokenizer = tokenizer_cereal.TokenizerCereal(self.rust_cereal_path,
-                                                         map(self.preprocessing_pipeline, enumerate(
-                                                             read_data.iter_annotations(cbor_fp), 1)),
-                                                         limit)
-
-        self.blocks_per_page = [int(np.ceil(length / self.token_length))
-                                for length in tokenizer.article_lengths if length > 0]
+            tokenizer = tokenizer_cereal.TokenizerCereal(
+                self.rust_cereal_path, filter(
+                    lambda x: x is not None, map(
+                        self.preprocessing_pipeline,
+                        enumerate(read_data.iter_annotations(cbor_fp), 1))),
+                limit)
 
     def count_frequency(self) -> Dict[int, int]:
         """
@@ -566,6 +583,9 @@ class WikipediaCBOR(Dataset):
         if not self.tokenizer:
             self.tokenizer = tokenizer_cereal.get_default_tokenizer(
                 self.rust_cereal_path)
+            
+            self.blocks_per_page = [int(np.ceil(length / self.token_length))
+                                    for length in self.tokenizer.article_lengths if length > 0]
 
         while self.start_page_idx < self.end_page_idx:
             page_lim = self.blocks_per_page[self.start_page_idx]
@@ -641,7 +661,6 @@ class SQuADDataloader():
         max_seq_length=512,
         max_query_length=384,
         doc_stride=128,
-        
     ):
         """
         Set up a Squad dataloader pipeline.
