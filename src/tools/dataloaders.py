@@ -25,6 +25,7 @@ import tokenizer_cereal
 import numpy as np
 
 import datasets
+import nltk
 import pprint
 import pandas as pd
 from transformers import AutoTokenizer
@@ -681,10 +682,6 @@ class SQuADDataloader():
         Set up a Squad dataloader pipeline.
         """
 
-        # TODO: Use Transformer's interface for the tokenizer rather than the crude one
-        # TODO: Deprecate vocabs.py
-        # self.tokenizer = load_tokenizer('bert-base-uncased')
-
         self.tokenizer = AutoTokenizer.from_pretrained(
             "bert-base-uncased", use_fast=False)
         self.dataset = datasets.load_dataset("squad")
@@ -782,3 +779,173 @@ class SQuADDataloader():
         # We can't export to pytorch's tensors because we also need the answers sublist!
         #self.tokenized_dataset.set_format(type="torch", columns=['input_ids', 'attention_mask', 'token_type_ids',
         #                                                         'answer_start', 'answer_end'])
+    
+
+class TriviaQAOpenBookDataloader:
+    """
+    TriviaQA for open-book evaluation.
+    
+    Create TriviaQA-style datasets and perform evaluation on them
+    """
+    def __init__(
+        self,
+        max_seq_length=512,
+        max_query_length=384,
+        doc_stride=128,
+        max_num_tokens=800,
+    ):
+        """
+        Set up a TriviaQA dataloader pipeline.
+        """
+
+        self.max_seq_length = max_seq_length
+        self.max_query_length = max_query_length
+        self.doc_stride = doc_stride
+        self.max_num_tokens = max_num_tokens
+
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "bert-base-uncased", use_fast=False)
+        self.dataset = datasets.load_dataset(
+            "trivia_qa", "rc", cache_dir=get_filename_path("trivia_qa/cache"))
+
+        # Convert to SQuAD-style whitespace-pretokenized text
+        nltk.download('punkt')
+        self.sent_tokenize = nltk.data.load('tokenizers/punkt/english.pickle')
+
+        squad.squad_convert_example_to_features_init(self.tokenizer)
+
+        self.tokenized_dataset = self.dataset.map(self.encode, batched=True) \
+            .filter(lambda example: len(example["input_ids"]) > 0)
+
+        # Ready-to-use datasets, compatible with samplers if needed.
+        self.train_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["train"]
+        )
+        self.dev_train_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["train"], int(len(self.train_dataset)*0.01)
+        )
+        self.validation_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["validation"]
+        )
+
+        self.dev_validation_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["validation"],
+            int(len(self.validation_dataset)) # just a noop
+        )
+
+        self.test_dataset = SQuADDataloader.SquadDataset(
+            self.tokenized_dataset["test"]
+        )
+
+
+    def encode(self, examples):
+        qas_id = examples["question_id"]
+        question_text = examples["question"]
+        context = [entity_page["wiki_context"] for entity_page in examples["entity_pages"]]
+        answers = [example["value"] for example in examples["answer"]]
+        context_text = []
+        
+        for text, answer in zip(context, answers):
+            new_context_buffer = StringIO()
+            for t in text:
+                new_context_buffer.write(self._split_join_context(t))
+                new_context_buffer.write(" ")
+            
+            context_text.append(new_context_buffer.getvalue())
+                
+        answers_start = [text.find(answer) for text, answer in zip(context_text, answers)]
+        answers_block = [
+            {
+                "text": [answer],
+                "answer_start": [answer_start],
+            }
+        for answer, answer_start in zip(answers, answers_start)]
+        is_impossible = [start == -1 for start in answers_start]
+
+
+        squad_examples = list(squad.SquadExample(*args) for args in zip(
+            qas_id,
+            question_text,
+            context_text,
+            answers,
+            answers_start,
+            qas_id, # use the ids as titles
+            answers_block,
+            is_impossible
+        ))
+        
+        features = squad.squad_convert_examples_to_features(
+            squad_examples,
+            self.tokenizer,
+            self.max_seq_length,
+            self.doc_stride,
+            self.max_query_length,
+            True
+        )
+        
+        examples_pd = pd.DataFrame({
+            "id": qas_id,
+            "answers": answers,
+            "context": context_text,
+            "question": question_text
+        })
+        result = pd.DataFrame([vars(feature) for feature in features])
+        
+        result_dropped = result.drop(["example_index", "token_is_max_context",
+                                "encoding", "token_to_orig_map", "cls_index", "paragraph_len",
+                                "unique_id"], axis=1)
+
+        # the HF processor silently removes problematic rows. In this case we have no choice but
+        # to add singletons for now and filter them out later
+
+        result_grouped = result_dropped.groupby(
+            "qas_id", as_index=False).agg(list)
+
+        result_grouped = examples_pd.set_index("id").join(
+            result_grouped.set_index("qas_id"),
+            how="left"
+        ).reset_index()
+
+        result_as_dict = result_grouped.to_dict()
+
+        result = {}
+
+        for k, v in result_as_dict.items():
+            values = list(v.values())
+            for i in range(len(values)):
+                if values[i] != values[i]:  # NaN:
+                    values[i] = []
+            result[k] = values
+
+        return result
+
+    def _split_join_context(self, text: str):
+        """
+        Convert the text into an easily whitespace-separable text.
+        
+        Copycat of triviaqa's select_relevant_portion()
+        
+        :param text
+        :returns an easily whitespace-separable text
+        """
+        # We assume that answers are not made of multiple sentences
+        paras = text.split('\n')
+        selected = []
+        done = False
+        for para in paras:
+            sents = self.sent_tokenize.tokenize(para)
+            for sent in sents:
+                words = nltk.word_tokenize(sent)
+                for word in words:
+                    selected.append(word)
+                    if len(selected) >= self.max_num_tokens:
+                        done = True
+                        break
+                if done:
+                    break
+            if done:
+                break
+            selected.append('\n')
+        st = ' '.join(selected).strip()
+        return st
+

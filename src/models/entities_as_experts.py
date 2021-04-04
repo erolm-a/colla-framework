@@ -566,8 +566,6 @@ class EaEForQuestionAnsweringOutput(NamedTuple):
     loss: Optional[torch.Tensor]
     start_logits: torch.Tensor
     end_logits: torch.Tensor
-    # 0: possible, 1: impossible.
-    impossible_logits: Optional[torch.Tensor]
 
 class EaEForQuestionAnswering(Module):
     """
@@ -577,7 +575,7 @@ class EaEForQuestionAnswering(Module):
 
     def __init__(self,
                  eae: EntitiesAsExperts,
-                 support_impossible = False):
+    ):
         """
         :param pretrained_model the pretrained model.
         """
@@ -589,13 +587,6 @@ class EaEForQuestionAnswering(Module):
         hidden_size = eae.config["hidden_size"]
         max_position_embeddings = eae.config["max_position_embeddings"]
         self.qa_outputs = Linear(hidden_size, 2)
-
-        # I could not find enough information on how this works, so I am improvising...
-        # Another possibility would be to simply threshold on the logit values
-        self.support_impossible = support_impossible
-        if support_impossible:
-            self.impossible_outputs = Linear(hidden_size * max_position_embeddings, 2)
-            self.impossible_outputs_loss_fct = CrossEntropyLoss()
 
         # Freeze the entity memory
         # This is mandated in the EaE paper
@@ -609,7 +600,6 @@ class EaEForQuestionAnswering(Module):
         token_type_ids: torch.Tensor,
         start_positions: Optional[torch.Tensor],
         end_positions: Optional[torch.Tensor],
-        is_impossible: Optional[torch.Tensor]
     ) -> Tuple[Optional[torch.Tensor], torch.Tensor, torch.Tensor]:
         """
         :param input_ids the input ids
@@ -657,19 +647,9 @@ class EaEForQuestionAnswering(Module):
             start_loss = loss_fct(start_logits, start_positions)
             end_loss = loss_fct(end_logits, end_positions)
 
-            if is_impossible is not None and self.support_impossible:
-                impossible_logits = self.impossible_outputs(outputs.last_hidden_state)
-                impossible_loss = self.impossible_outputs_loss_fct(possible_logits, is_possible)
-
-                total_loss = (start_loss + end_loss + impossible_loss) / 3
-
-                return EaEForQuestionAnsweringOutput(
-                    total_loss, start_logits, end_logits, impossible_logits
-                )
-            else:
-                total_loss = (start_loss + end_loss) / 2
+            total_loss = (start_loss + end_loss) / 2
 
         if total_loss is not None and outputs.loss is not None:
             total_loss += outputs.loss
         
-        return EaEForQuestionAnsweringOutput(total_loss, start_logits, end_logits, impossible_logits)
+        return EaEForQuestionAnsweringOutput(total_loss, start_logits, end_logits)
