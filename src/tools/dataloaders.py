@@ -311,7 +311,7 @@ class WikipediaCBOR(Dataset):
         # For the sake of easy link spans they are byte oriented to make
         # it easier for the rust std
         # page_content = StringIO()
-        split_content = []
+        split_content = [] # type: TokenizedText
         orig_page_content = StringIO()
         prev_page_length = 0
         prev_body = ""
@@ -837,31 +837,53 @@ class TriviaQAOpenBookDataloader:
             self.tokenized_dataset["test"]
         )
 
+    def _find_answer_in_doc(
+        self,
+        answer_list: List[str],
+        answer_normalized: str,
+        document: str
+    ):
+        """
+        Copycat of triviaqa's
+        :param answer_list a list of answers
+        :pram answer_normalized the default answer if nothing is available
+        :param document the document to look ofr
+        :returns a pair (ans, idx) if a subtoken of answer was found in the document at index idx,
+                else (answer, -1)
+        """
+        for answer_string_in_doc in answer_list:
+            index = document.lower().find(answer_string_in_doc)
+            if index != -1:
+                return {
+                    "text": [document[index:index+len(answer_string_in_doc)]], 
+                    "answer_start": [index]
+                }
+        return {"text": answer_normalized, "answer_start":  [-1]}
 
     def encode(self, examples):
         qas_id = examples["question_id"]
         question_text = examples["question"]
         context = [entity_page["wiki_context"] for entity_page in examples["entity_pages"]]
-        answers = [example["value"] for example in examples["answer"]]
+        answers = [example["normalized_aliases"] for example in examples["answer"]]
+        answers_normalized = [example["normalized_value"] for example in examples["answer"]]
+        
         context_text = []
         
-        for text, answer in zip(context, answers):
+        for text in context:
             new_context_buffer = StringIO()
             for t in text:
-                new_context_buffer.write(self._split_join_context(t))
+                new_context_buffer.write(t)
                 new_context_buffer.write(" ")
             
-            context_text.append(new_context_buffer.getvalue())
-                
-        answers_start = [text.find(answer) for text, answer in zip(context_text, answers)]
-        answers_block = [
-            {
-                "text": [answer],
-                "answer_start": [answer_start],
-            }
-        for answer, answer_start in zip(answers, answers_start)]
+            context_text.append(self._split_join_context(new_context_buffer.getvalue()))
+        
+        answers_block = [self._find_answer_in_doc(answer, answer_normalized, text) \
+                        for text, answer, answer_normalized in \
+                            zip(context_text, answers, answers_normalized)]
+        
+        answers = [answer_block["text"][0] for answer_block in answers_block]
+        answers_start = [answer_block["answer_start"][0] for answer_block in answers_block]
         is_impossible = [start == -1 for start in answers_start]
-
 
         squad_examples = list(squad.SquadExample(*args) for args in zip(
             qas_id,
@@ -873,7 +895,7 @@ class TriviaQAOpenBookDataloader:
             answers_block,
             is_impossible
         ))
-        
+
         features = squad.squad_convert_examples_to_features(
             squad_examples,
             self.tokenizer,
@@ -882,15 +904,15 @@ class TriviaQAOpenBookDataloader:
             self.max_query_length,
             True
         )
-        
+
         examples_pd = pd.DataFrame({
-            "id": qas_id,
+            "question_id": qas_id,
             "answers": answers,
             "context": context_text,
             "question": question_text
         })
         result = pd.DataFrame([vars(feature) for feature in features])
-        
+
         result_dropped = result.drop(["example_index", "token_is_max_context",
                                 "encoding", "token_to_orig_map", "cls_index", "paragraph_len",
                                 "unique_id"], axis=1)
@@ -901,10 +923,12 @@ class TriviaQAOpenBookDataloader:
         result_grouped = result_dropped.groupby(
             "qas_id", as_index=False).agg(list)
 
-        result_grouped = examples_pd.set_index("id").join(
+        result_grouped = examples_pd.set_index("question_id").join(
             result_grouped.set_index("qas_id"),
             how="left"
-        ).reset_index()
+        # FIXME: Why pandas does not automatically rename the column?
+        ).reset_index(). \
+        rename(columns={"index": "question_id"})
 
         result_as_dict = result_grouped.to_dict()
 
@@ -922,9 +946,9 @@ class TriviaQAOpenBookDataloader:
     def _split_join_context(self, text: str):
         """
         Convert the text into an easily whitespace-separable text.
-        
+
         Copycat of triviaqa's select_relevant_portion()
-        
+
         :param text
         :returns an easily whitespace-separable text
         """
@@ -949,3 +973,83 @@ class TriviaQAOpenBookDataloader:
         st = ' '.join(selected).strip()
         return st
 
+class TriviaQAClosedBookDataloader:
+    def __init__(self):
+        self.slow_tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", is_fast=False)
+        self.fast_tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+
+        self.robetta_dataset
+        
+
+    def encode_closed_book(
+        self,
+        batch,
+        is_question: bool,
+        dropout_rate: float
+    ):
+        if is_question:
+            questions = batch["question"]
+            answers = [b["value"] for b in batch["answer"]]
+            
+            answer_ids = self.slow_tokenizer.batch_encode_plus(answers, add_special_tokens=False)
+            
+            masked_answer_ids = [[self.tokenizer.mask_token_id] * len(answer) \
+                                for answer in answer_ids["input_ids"]]
+            
+            tokenized = self.slow_tokenizer.batch_encode_plus(
+                questions,
+                answer_ids,
+                padding="max_length",
+                max_length=512
+            )
+            
+            tokenized_masked = tokenizer.batch_encode_plus(
+                list(zip(questions,masked_answer_ids)),
+                padding="max_length",
+                max_length=512
+            )
+            
+            tokenized_masked["output_ids"] = tokenized["input_ids"]
+        
+            return tokenized_masked
+        
+        else:
+            context = [entity_page["wiki_context"] for entity_page in batch["entity_pages"]]
+            context_text = []
+
+            for text in context:
+                new_context_buffer = StringIO()
+                for t in text:
+                    new_context_buffer.write(t)
+                    new_context_buffer.write(" ")
+
+                context_text.append(new_context_buffer.getvalue())
+            
+            tokenized = self.tokenizer.batch_encode_plus(
+                context_text,
+                add_special_tokens=False,
+                #return_tensors="np",
+                #return_overflowing_tokens=True
+            )
+            unmasked_input_ids = tokenized["input_ids"]
+            tokenized["output_ids"] = deepcopy(unmasked_input_ids)
+            
+            masked_sentences = []
+            
+            for sentence in unmasked_input_ids:
+                #print(sentence)
+                masked_sentence = np.array(sentence)
+                toks_to_mask = np.random.choice([True, False], len(sentence),
+                                                p=(dropout_rate, 1.0 - dropout_rate))
+                masked_sentence[toks_to_mask] = fast_tokenizer.mask_token_id
+                masked_sentences.append(masked_sentence.tolist())
+            
+            tokenized["input_ids"] = masked_sentences
+            
+            return tokenized
+
+    def encode_closed_book_question(self, batch):
+        return self.encode_closed_book(batch, True, 0.0)
+
+    def encode_closed_book_context(batch, dropout_rate=0.15):
+        return self.encode_closed_book(batch, False, dropout_rate=dropout_rate)
