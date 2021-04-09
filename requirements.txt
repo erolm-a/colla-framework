@@ -3,7 +3,8 @@ pandas==1.0.4
 python-dateutil==2.8.1
 pytz==2020.1
 SPARQLWrapper==1.8.5
-spacy==2.3.0
+spacy==3.0.0
+https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.0.0/en_core_web_md-3.0.0.tar.gz#egg=en_core_web_md
 sentence-transformers==0.4.1
 transformers==4.2.0
 datasets==1.2.1

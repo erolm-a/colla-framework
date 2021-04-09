@@ -4,8 +4,7 @@ FIXME: delete me as soon as debugging is over
 """
 
 from tools.dataloaders import WikipediaCBOR, SQuADDataloader
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
+import transformers
 from itertools import zip_longest # for Python 3.x
 
 import torch
@@ -13,20 +12,16 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, rando
 import os
 
 
-def grouper(n, iterable, padvalue=None):
-    "grouper(3, 'abcdefg', 'x') --> ('a','b','c'), ('d','e','f'), ('g','x','x')"
-    return zip_longest(*[iter(iterable)]*n, fillvalue=padvalue)
-
-def get_slices(wikipedia_cbor, slices):
-    return [wikipedia_cbor[i] for i in slices]
-
-
 def main():
-    """
+    
     wikipedia_cbor = WikipediaCBOR("wikipedia/car-wiki2020-01-01/enwiki2020.cbor",
                                     "wikipedia/car-wiki2020-01-01/partitions",
-                                    #page_lim=1000, repreprocess=True
+                                    page_lim=100000, repreprocess=True
                                     )
+
+    print(wikipedia_cbor[0]) 
+
+    """
 
     bs = 64
     #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,8 +29,7 @@ def main():
 
     # use only 0.1%  of our dataset for debugging purposes.
     # Yes, I should make better efforts for making a development dataset
-    wiki_use_size = int(0.1 * len(wikipedia_cbor))
-    wikipedia_cbor_limited, _ = random_split(wikipedia_cbor,
+    wiki_use_size = int(0.1 * len(wikipedia_cbor)) wikipedia_cbor_limited, _ = random_split(wikipedia_cbor,
                                             [wiki_use_size, len(wikipedia_cbor) - wiki_use_size],
                                             generator=torch.Generator().manual_seed(42))
 
@@ -63,7 +57,6 @@ def main():
 
 
     # wikipedia_cbor.tokenizer.
-    """
 
     squad_dataset = SQuADDataloader()
     train_dataset = squad_dataset.train_dataset
@@ -71,6 +64,7 @@ def main():
     for b in train_dataset:
         print(b)
         break
+    """
     
 if __name__ == "__main__":
     main()
